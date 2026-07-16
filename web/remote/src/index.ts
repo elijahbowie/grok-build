@@ -7,6 +7,11 @@ import { githubCiLogProxy, githubWebhook } from "./github";
 import { companionArtifactToken, companionIdentity, pairCompanion, revokeCompanionToken } from "./companion";
 import { getAutomationTrigger, listDueCronTriggers, recordCronTriggerFired, verifyWebhookHmac } from "./cloud-automations";
 import { dispatchAutomation, drainAutomationQueue } from "./automation-runtime";
+import { agentApiRoute } from "./agent-api";
+import { processArtifactsEvent } from "./scm-events";
+import { publicTaskShareRoute } from "./knowledge-collaboration";
+import { retryAgentWebhookDeliveries } from "./agent-webhooks";
+import { retryAutomationDeliveries } from "./automation-delivery";
 export { TaskHub } from "./task-hub";
 export { TaskWorkflow } from "./workflow";
 export { GitHubSyncWorkflow } from "./github";
@@ -158,8 +163,10 @@ async function route(request: Request, env: ControlEnv) {
     return json(dispatched, dispatched.admitted ? 202 : 200);
   }
   if (url.pathname.startsWith("/mcp-proxy/")) return connectorProxyRoute(request, env);
+  if (url.pathname.startsWith("/shared/")) return publicTaskShareRoute(request, env);
   if (url.pathname.startsWith("/github-ci-proxy/")) return githubCiLogProxy(request, env);
   if (url.pathname === "/github/webhook" && request.method === "POST") return githubWebhook(request, env);
+  if (url.pathname === "/v1/agents" || url.pathname.startsWith("/v1/agents/") || url.pathname === "/v1/webhooks" || url.pathname.startsWith("/v1/webhooks/")) return agentApiRoute(request, env);
   if (url.pathname === "/v1/companion/pair" && request.method === "POST") return pairCompanion(request, env);
   if (url.pathname.startsWith("/v1/companion/") && url.pathname !== "/v1/companion/pair") {
     const bodyText = request.method === "GET" ? "" : await request.text();
@@ -208,10 +215,17 @@ async function runScheduledAutomations(env: ControlEnv, scheduledTime: number) {
     }
   }
   await drainAutomationQueue(env);
+  await Promise.all([retryAgentWebhookDeliveries(env), retryAutomationDeliveries(env)]);
 }
 
 export default {
   async fetch(request, env) { try { return await route(request, env as ControlEnv); } catch (error) { const message = error instanceof Error ? error.message : "Unknown error"; console.error(JSON.stringify({ message: "runner request failed", error: message, path: new URL(request.url).pathname })); return json({ error: message }, 500); } },
   async scheduled(controller, env) { await runScheduledAutomations(env as ControlEnv, controller.scheduledTime); },
+  async queue(batch, env) {
+    for (const message of batch.messages) {
+      try { await processArtifactsEvent(env as ControlEnv, message.body); message.ack(); }
+      catch (error) { console.error(JSON.stringify({ message:"Artifacts event processing failed", error:error instanceof Error ? error.message : String(error), messageId:message.id })); message.retry(); }
+    }
+  },
 } satisfies ExportedHandler<Env>;
 export { ContainerProxy, Sandbox };

@@ -84,6 +84,21 @@ export async function removeConnector(env: ControlEnv, identity: Identity, conne
   return true;
 }
 
+export async function connectorFetch(env: ControlEnv, connectorId: string, init: RequestInit = {}) {
+  const connector = await env.CONTROL_DB.prepare("SELECT * FROM connectors WHERE id = ? AND enabled = 1").bind(connectorId).first<Connector>();
+  if (!connector?.endpoint) throw new Error("Connector not found");
+  const headers = new Headers(init.headers);
+  headers.delete("host");
+  headers.delete("cf-access-jwt-assertion");
+  if (connector.secret_ref) {
+    const stored = await env.CONNECTOR_SECRETS.get(connector.secret_ref);
+    if (!stored) throw new Error("Connector credential is unavailable");
+    const secret = JSON.parse(await decryptSecret(env, await stored.text())) as {authorization?:string};
+    if (secret.authorization) headers.set("authorization", secret.authorization);
+  }
+  return fetch(connector.endpoint, { ...init, headers, redirect: "manual" });
+}
+
 async function signingKey(env: ControlEnv) {
   return crypto.subtle.importKey("raw", bytes(env.CONNECTOR_ENCRYPTION_KEY), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
 }

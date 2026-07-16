@@ -27,11 +27,20 @@ export async function accessIdentity(request: Request, env: ControlEnv): Promise
   try {
     const { payload } = await jwtVerify(token, config.jwks, { issuer: config.issuer, audience: env.ACCESS_AUD });
     const email = typeof payload.email === "string" ? payload.email.toLowerCase() : "";
-    if (!payload.sub || !email || email !== env.ACCESS_EMAIL.toLowerCase()) return null;
+    if (!payload.sub || !email || !emailAllowed(email, env)) return null;
     return { sub: payload.sub, email, name: typeof payload.name === "string" ? payload.name : undefined };
   } catch {
     return null;
   }
+}
+
+function emailAllowed(email: string, env: ControlEnv) {
+  const explicit = (env.ACCESS_ALLOWED_EMAILS || env.ACCESS_EMAIL || "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
+  const domains = (env.ACCESS_ALLOWED_DOMAINS || "").split(",").map((value) => value.trim().toLowerCase().replace(/^@/, "")).filter(Boolean);
+  if (explicit.includes("*")) return true;
+  if (explicit.includes(email)) return true;
+  const domain = email.split("@")[1] || "";
+  return Boolean(domain && domains.includes(domain));
 }
 
 export function accessConfigured(env: ControlEnv) {

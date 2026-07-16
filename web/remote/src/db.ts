@@ -14,22 +14,32 @@ export function slug(value: string) {
 }
 
 export async function listProjects(db: D1Database, ownerSub: string) {
-  return (await db.prepare("SELECT * FROM projects WHERE owner_sub = ? ORDER BY updated_at DESC").bind(ownerSub).all<Project>()).results;
+  return (await db.prepare(`SELECT DISTINCT p.* FROM projects p WHERE p.owner_sub=?
+    OR EXISTS (SELECT 1 FROM project_memberships pm WHERE pm.project_id=p.id AND pm.member_sub=?)
+    OR EXISTS (SELECT 1 FROM organization_memberships om WHERE om.organization_id=p.organization_id AND om.member_sub=? AND om.status='active')
+    ORDER BY p.updated_at DESC`).bind(ownerSub, ownerSub, ownerSub).all<Project>()).results;
 }
 
 export async function getProject(db: D1Database, ownerSub: string, projectId: string) {
-  return db.prepare("SELECT * FROM projects WHERE id = ? AND owner_sub = ?").bind(projectId, ownerSub).first<Project>();
+  return db.prepare(`SELECT p.* FROM projects p WHERE p.id=? AND (p.owner_sub=?
+    OR EXISTS (SELECT 1 FROM project_memberships pm WHERE pm.project_id=p.id AND pm.member_sub=?)
+    OR EXISTS (SELECT 1 FROM organization_memberships om WHERE om.organization_id=p.organization_id AND om.member_sub=? AND om.status='active'))`)
+    .bind(projectId, ownerSub, ownerSub, ownerSub).first<Project>();
 }
 
 export async function listTasks(db: D1Database, ownerSub: string, projectId?: string) {
+  const access = `(t.owner_sub=? OR EXISTS (SELECT 1 FROM project_memberships pm WHERE pm.project_id=t.project_id AND pm.member_sub=?) OR EXISTS (SELECT 1 FROM projects p JOIN organization_memberships om ON om.organization_id=p.organization_id WHERE p.id=t.project_id AND om.member_sub=? AND om.status='active'))`;
   const query = projectId
-    ? db.prepare("SELECT * FROM tasks WHERE owner_sub = ? AND project_id = ? AND archived_at IS NULL ORDER BY created_at DESC").bind(ownerSub, projectId)
-    : db.prepare("SELECT * FROM tasks WHERE owner_sub = ? AND archived_at IS NULL ORDER BY created_at DESC").bind(ownerSub);
+    ? db.prepare(`SELECT t.* FROM tasks t WHERE ${access} AND t.project_id=? AND t.archived_at IS NULL ORDER BY t.created_at DESC`).bind(ownerSub, ownerSub, ownerSub, projectId)
+    : db.prepare(`SELECT t.* FROM tasks t WHERE ${access} AND t.archived_at IS NULL ORDER BY t.created_at DESC`).bind(ownerSub, ownerSub, ownerSub);
   return (await query.all<Task>()).results;
 }
 
 export async function getTask(db: D1Database, ownerSub: string, taskId: string) {
-  return db.prepare("SELECT * FROM tasks WHERE id = ? AND owner_sub = ?").bind(taskId, ownerSub).first<Task>();
+  return db.prepare(`SELECT t.* FROM tasks t WHERE t.id=? AND (t.owner_sub=?
+    OR EXISTS (SELECT 1 FROM project_memberships pm WHERE pm.project_id=t.project_id AND pm.member_sub=?)
+    OR EXISTS (SELECT 1 FROM projects p JOIN organization_memberships om ON om.organization_id=p.organization_id WHERE p.id=t.project_id AND om.member_sub=? AND om.status='active'))`)
+    .bind(taskId, ownerSub, ownerSub, ownerSub).first<Task>();
 }
 
 export async function workflowTask(db: D1Database, taskId: string, ownerSub: string) {

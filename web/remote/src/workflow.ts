@@ -6,6 +6,7 @@ import type { ControlEnv, Project, Task, TaskWorkflowInput } from "./types";
 import { connectorProxyToken, type Connector } from "./connectors";
 import { ciRepairInstructions } from "./github";
 import { createReviewRun } from "./review";
+import { closeContainerSession, containerCostMicros, extractAgentUsage, openContainerSession, recordUsageEvent } from "./usage";
 import { resolveTaskEnvironment, type ResolvedTaskEnvironment } from "./environments";
 import { acknowledgePlanMessages, completePlanExecution, deliverQueuedPlanMessages, getTaskPlan, releasePlanMessages, requirePlanRecovery, transitionPlanStep } from "./plan-mode";
 import { acknowledgeSubagentSteers, blockSubagent, claimPendingSubagentSteers, completeSubagentWithHandoff, failSubagent, releaseSubagentSteers, startReadySubagents } from "./subagents";
@@ -15,6 +16,9 @@ import { updateAutomationRun } from "./cloud-automations";
 import { resolveEnvironmentSecretValues, secretValues } from "./environment-secrets";
 import { redactSecurityText } from "./security-policy";
 import { drainAutomationQueue } from "./automation-runtime";
+import { deliverAutomationEvent } from "./automation-delivery";
+import { indexTaskForSearch } from "./knowledge-collaboration";
+import { deliverAgentWebhookEvent } from "./agent-webhooks";
 
 type TaskContext = { task: Task; project: Project; environment: ResolvedTaskEnvironment };
 type RunResult = { ok: boolean; exitCode: number; sessionId: string | null; stderr: string; evidenceKey: string };
@@ -139,6 +143,8 @@ async function runAgent(env: ControlEnv, item: TaskContext, fork: {name:string;r
   if (!await loadSubscription(env, sandbox)) throw new Error("Cloud Grok subscription is signed out");
   const cwd = await prepareEnvironment(env, item, fork);
   const desktop = await ensureDesktop(sandbox, item.task.id);
+  const activeStarted = Date.now();
+  const containerSessionId = await openContainerSession(env.CONTROL_DB, { ownerSub:item.task.owner_sub, projectId:item.project.id, taskId:item.task.id, sandboxId:`grok-${item.task.id}`, instanceType:"standard-3", wakeReason:`agent-attempt-${attempt}` });
   let result;
   const runtimeSecrets = await resolveEnvironmentSecretValues(env, item.environment.secrets, "runtime");
   try {
@@ -161,6 +167,14 @@ async function runAgent(env: ControlEnv, item: TaskContext, fork: {name:string;r
     result = await sandbox.exec(grokCommand(promptPath, cwd, item.task, sessionId), { cwd, timeout, env: { GROK_HOME: grokHome, NO_COLOR: "1", ...runtimeSecrets } });
   } finally {
     await desktop.kill().catch(() => undefined);
+    const activeMilliseconds = Date.now() - activeStarted;
+    await closeContainerSession(env.CONTROL_DB, { sessionId:containerSessionId, activeMilliseconds, state:"sleeping" });
+    await recordUsageEvent(env.CONTROL_DB, {
+      ownerSub:item.task.owner_sub, projectId:item.project.id, taskId:item.task.id,
+      category:"container", meter:"standard-3-active", quantity:activeMilliseconds, unit:"milliseconds",
+      costMicros:containerCostMicros(activeMilliseconds, Number(env.STANDARD_3_COST_PER_HOUR_MICROS || 0)), source:"cloudflare-sandbox",
+      idempotencyKey:`container:${item.task.id}:${attempt}`, metadata:{ sleepAfter:"30s", stateAfterRun:"sleeping" },
+    });
   }
   await persistSubscription(env, sandbox);
   const evidenceKey = `tasks/${item.task.id}/agent-attempt-${attempt}.jsonl`;
@@ -170,6 +184,13 @@ async function runAgent(env: ControlEnv, item: TaskContext, fork: {name:string;r
   const expiresAt = new Date(Date.now() + Number(env.TASK_RETENTION_DAYS) * 86_400_000).toISOString();
   await env.CONTROL_DB.prepare("INSERT OR REPLACE INTO evidence (id, task_id, kind, r2_key, content_type, size_bytes, metadata_json, created_at, expires_at) VALUES (?, ?, 'agent-log', ?, 'application/x-ndjson', ?, ?, ?, ?)")
     .bind(`ev_${item.task.id}_${attempt}`, item.task.id, evidenceKey, new TextEncoder().encode(evidenceBody).byteLength, JSON.stringify({ attempt, exitCode: result.exitCode }), createdAt, expiresAt).run();
+  const usage = extractAgentUsage(result.stdout);
+  if (usage.totalTokens || usage.costMicros) await recordUsageEvent(env.CONTROL_DB, {
+    ownerSub:item.task.owner_sub, projectId:item.project.id, taskId:item.task.id,
+    category:"model", meter:"tokens", quantity:usage.totalTokens, unit:"tokens", costMicros:usage.costMicros, model:item.task.model,
+    source:"grok-streaming-json", idempotencyKey:`model:${item.task.id}:${attempt}`,
+    metadata:{ inputTokens:usage.inputTokens, outputTokens:usage.outputTokens },
+  });
   return { ok: result.success, exitCode: result.exitCode, sessionId: sessionFrom(result.stdout, sessionId), stderr: redactSecurityText(result.stderr.slice(-4000), secretValues(runtimeSecrets)), evidenceKey };
 }
 
@@ -387,12 +408,18 @@ export class TaskWorkflow extends WorkflowEntrypoint<ControlEnv, TaskWorkflowInp
       }
       const browserEvidence = await step.do("retain browser evidence", { timeout: "10 minutes" }, () => harvestBrowserEvidence(this.env, item));
       const revision = await step.do("push task fork and back up workspace", { timeout: "20 minutes" }, () => pushAndBackup(this.env, item, fork));
+      await step.do("complete review autofix record", () => this.env.CONTROL_DB.prepare("UPDATE review_fix_runs SET status='completed',result_head_sha=?,completed_at=?,updated_at=? WHERE task_id=? AND workflow_id=? AND status='running'").bind(revision.headSha, now(), now(), input.taskId, item.task.workflow_id).run().then(() => undefined));
       await step.do("mark ready for review", async () => {
         await updateTask(this.env.CONTROL_DB, input.taskId, "review", { sessionId: run.sessionId ?? undefined, baseSha: revision.baseSha, headSha: revision.headSha, error: null });
         const taskEvent = await appendEvent(this.env.CONTROL_DB, input.taskId, "task.review", { taskRepo: fork.name, baseSha: revision.baseSha, headSha: revision.headSha, verification: check.evidenceKey, browserEvidence: browserEvidence.length });
         await broadcast(this.env, input.ownerSub, taskEvent);
+        await indexTaskForSearch(this.env.CONTROL_DB, input.taskId);
+        await deliverAgentWebhookEvent(this.env, { ownerSub:input.ownerSub, projectId:item.project.id, eventType:"agent.review", eventId:`agent.review:${input.taskId}:${revision.headSha}`, payload:{ taskId:input.taskId, status:"review", headSha:revision.headSha, canonicalRepository:item.project.artifact_repo } }).catch(() => undefined);
         await (await this.env.ARTIFACTS.get(fork.name)).revokeToken(fork.token);
-        if (input.automationRunId) await updateAutomationRun(this.env.CONTROL_DB, { ownerSub: input.ownerSub, runId: input.automationRunId, status: "review", reason: "Task implementation and verification completed; human review is required" });
+        if (input.automationRunId) {
+          await updateAutomationRun(this.env.CONTROL_DB, { ownerSub: input.ownerSub, runId: input.automationRunId, status: "review", reason: "Task implementation and verification completed; human review is required" });
+          await deliverAutomationEvent(this.env, { ownerSub:input.ownerSub, runId:input.automationRunId, eventType:"run.review" }).catch(() => undefined);
+        }
       });
       const review = await step.do("queue independent review", async () => {
         const workflowId = `review-${input.taskId}-${revision.headSha.slice(0, 12)}`;
@@ -435,8 +462,13 @@ export class TaskWorkflow extends WorkflowEntrypoint<ControlEnv, TaskWorkflowInp
         await this.env.CONTROL_DB.prepare("UPDATE ci_repairs SET status='completed', updated_at=? WHERE task_id=?").bind(now(), input.taskId).run();
         const taskEvent = await appendEvent(this.env.CONTROL_DB, input.taskId, "task.completed", { taskRepo: fork.name, headSha: promotedSha });
         await broadcast(this.env, input.ownerSub, taskEvent);
+        await indexTaskForSearch(this.env.CONTROL_DB, input.taskId);
+        await deliverAgentWebhookEvent(this.env, { ownerSub:input.ownerSub, projectId:item.project.id, eventType:"agent.completed", eventId:`agent.completed:${input.taskId}:${promotedSha}`, payload:{ taskId:input.taskId, status:"completed", headSha:promotedSha, canonicalRepository:item.project.artifact_repo } }).catch(() => undefined);
         if (input.planRevisionId) await completePlanExecution(this.env.CONTROL_DB, { taskId: input.taskId, ownerSub: input.ownerSub, revisionId: input.planRevisionId, actorSub: "task-workflow" });
-        if (input.automationRunId) await updateAutomationRun(this.env.CONTROL_DB, { ownerSub: input.ownerSub, runId: input.automationRunId, status: "completed", reason: "Reviewed task was promoted" });
+        if (input.automationRunId) {
+          await updateAutomationRun(this.env.CONTROL_DB, { ownerSub: input.ownerSub, runId: input.automationRunId, status: "completed", reason: "Reviewed task was promoted" });
+          await deliverAutomationEvent(this.env, { ownerSub:input.ownerSub, runId:input.automationRunId, eventType:"run.completed" }).catch(() => undefined);
+        }
         if (input.automationRunId) await drainAutomationQueue(this.env, input.ownerSub);
         await createTaskAttentionEvent(this.env.CONTROL_DB, { ownerSub: input.ownerSub, taskId: input.taskId, kind: "task-completed", dedupKey: `completed:${input.taskId}:${promotedSha}` });
       });
@@ -456,9 +488,15 @@ export class TaskWorkflow extends WorkflowEntrypoint<ControlEnv, TaskWorkflowInp
         await this.env.CONTROL_DB.prepare("UPDATE ci_repairs SET status='failed', updated_at=? WHERE task_id=?").bind(now(), input.taskId).run();
         const taskEvent = await appendEvent(this.env.CONTROL_DB, input.taskId, "task.failed", { error: message });
         await broadcast(this.env, input.ownerSub, taskEvent);
+        await indexTaskForSearch(this.env.CONTROL_DB, input.taskId).catch(() => undefined);
+        const failedTask = await workflowTask(this.env.CONTROL_DB, input.taskId, input.ownerSub);
+        if (failedTask) await deliverAgentWebhookEvent(this.env, { ownerSub:input.ownerSub, projectId:failedTask.project_id, eventType:"agent.failed", eventId:`agent.failed:${input.taskId}:${failedTask.workflow_id}`, payload:{ taskId:input.taskId, status:"failed", error:message } }).catch(() => undefined);
         await createTaskAttentionEvent(this.env.CONTROL_DB, { ownerSub: input.ownerSub, taskId: input.taskId, kind: "task-failed", dedupKey: `failed:${input.taskId}:${Date.now()}` }).catch(() => undefined);
         if (input.planRevisionId) await requirePlanRecovery(this.env.CONTROL_DB, { taskId: input.taskId, ownerSub: input.ownerSub, actorSub: "task-workflow", reason: message }).catch(() => undefined);
-        if (input.automationRunId) await updateAutomationRun(this.env.CONTROL_DB, { ownerSub: input.ownerSub, runId: input.automationRunId, status: "failed", error: message }).catch(() => undefined);
+        if (input.automationRunId) {
+          await updateAutomationRun(this.env.CONTROL_DB, { ownerSub: input.ownerSub, runId: input.automationRunId, status: "failed", error: message }).catch(() => undefined);
+          await deliverAutomationEvent(this.env, { ownerSub:input.ownerSub, runId:input.automationRunId, eventType:"run.failed" }).catch(() => undefined);
+        }
         if (input.automationRunId) await drainAutomationQueue(this.env, input.ownerSub).catch(() => undefined);
         if (input.subagentId && input.parentTaskId) {
           const task = await workflowTask(this.env.CONTROL_DB, input.taskId, input.ownerSub);

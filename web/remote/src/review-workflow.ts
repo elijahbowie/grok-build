@@ -18,6 +18,7 @@ import {
   type ReviewRunRow,
 } from "./review";
 import { createTaskAttentionEvent } from "./notifications";
+import { publishReviewToScm } from "./review-publication";
 
 export type ReviewWorkflowInput = { reviewRunId: string; taskId: string; ownerSub: string };
 
@@ -111,6 +112,7 @@ export class ReviewWorkflow extends WorkflowEntrypoint<ControlEnv, ReviewWorkflo
       await step.do("mark review running", () => markReviewRunning(this.env.CONTROL_DB, input.reviewRunId));
       const result = await step.do("run independent reviewer", { retries: { limit: 1, delay: "10 seconds" }, timeout: "70 minutes", sensitive: "output" }, () => executeIndependentReview(this.env, item));
       await step.do("persist validated findings", () => completeReview(this.env.CONTROL_DB, input.reviewRunId, input.taskId, result.output, result.outputKey));
+      await step.do("publish SCM-neutral review", { timeout:"15 minutes" }, () => publishReviewToScm(this.env, input));
       await step.do("notify user when approval is available", async () => {
         if (result.output.findings.some(isBlockingFinding)) return;
         const child = await this.env.CONTROL_DB.prepare("SELECT id FROM subagent_runs WHERE child_task_id=?").bind(input.taskId).first<{id:string}>();

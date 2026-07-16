@@ -4,6 +4,8 @@ import { decryptSecret, encryptSecret } from "./connectors";
 import { id, now } from "./db";
 import { sandboxFor, shell } from "./sandbox-runtime";
 import type { ControlEnv, Identity, Project } from "./types";
+import { normalizeGithubEvent, upsertGithubMirrorTarget } from "./scm";
+import { processScmEvent } from "./scm-events";
 import { getAutomationTrigger } from "./cloud-automations";
 import { dispatchAutomation } from "./automation-runtime";
 import { resolveTaskEnvironment } from "./environments";
@@ -92,8 +94,8 @@ export async function githubManifest(env: ControlEnv, identity: Identity) {
       name: "Grok Build Cloud", url: origin, description: "Optional two-way GitHub sync for Grok Build projects", public: false,
       hook_attributes: { url: `${env.MACHINE_ORIGIN}/github/webhook`, active: true }, redirect_url: `${origin}/api/github/manifest/callback`,
       callback_urls: [`${origin}/api/github/installation/callback`], setup_url: `${origin}/?github=installed`, setup_on_update: true,
-      default_permissions: { contents: "write", metadata: "read", checks: "read", actions: "read" },
-      default_events: ["push", "installation", "installation_repositories", "check_suite", "workflow_run"],
+      default_permissions: { contents: "write", metadata: "read", checks: "read", actions: "read", pull_requests:"write", issues:"write" },
+      default_events: ["push", "pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment", "installation", "installation_repositories", "check_suite", "workflow_run"],
     },
   };
 }
@@ -136,6 +138,7 @@ export async function githubWebhook(request: Request, env: ControlEnv) {
   const event = request.headers.get("x-github-event") || "";
   const delivery = request.headers.get("x-github-delivery") || crypto.randomUUID();
   const payload = JSON.parse(body) as Record<string, any>;
+  await processScmEvent(env, normalizeGithubEvent({ event, delivery, payload }));
   if ((event === "push" || event === "pull_request") && payload.repository?.full_name) {
     const triggerIds = await env.CONTROL_DB.prepare("SELECT t.id FROM cloud_automation_triggers t JOIN cloud_automations a ON a.id=t.automation_id WHERE a.owner_sub=? AND a.status='enabled' AND t.type='github' AND t.enabled=1").bind(ownerSub).all<{id:string}>();
     const changedPaths = event === "push" ? [...new Set((Array.isArray(payload.commits) ? payload.commits : []).flatMap((commit:Record<string, unknown>) => [commit.added, commit.modified, commit.removed].flatMap((paths) => Array.isArray(paths) ? paths.map(String) : [])))] : [];
@@ -207,10 +210,11 @@ export async function githubWebhook(request: Request, env: ControlEnv) {
 
 export async function linkGitHubProject(env: ControlEnv, identity: Identity, projectId: string, input: {installationId?:string;repository?:string}) {
   const project = await env.CONTROL_DB.prepare("SELECT * FROM projects WHERE id = ? AND owner_sub = ?").bind(projectId, identity.sub).first<Project>();
-  const connection = input.installationId ? await env.CONTROL_DB.prepare("SELECT * FROM github_connections WHERE installation_id = ? AND owner_sub = ?").bind(input.installationId, identity.sub).first() : null;
+  const connection = input.installationId ? await env.CONTROL_DB.prepare("SELECT * FROM github_connections WHERE installation_id = ? AND owner_sub = ?").bind(input.installationId, identity.sub).first<{id:string}>() : null;
   if (!project || !connection || !input.repository || !/^[\w.-]+\/[\w.-]+$/.test(input.repository)) throw new Error("Invalid GitHub project link");
   await env.CONTROL_DB.prepare("INSERT INTO sync_state (project_id, github_connection_id, repository_full_name, status, updated_at) VALUES (?, (SELECT id FROM github_connections WHERE installation_id = ?), ?, 'in_sync', ?) ON CONFLICT(project_id) DO UPDATE SET github_connection_id=excluded.github_connection_id, repository_full_name=excluded.repository_full_name, status='in_sync', updated_at=excluded.updated_at")
     .bind(projectId, input.installationId, input.repository, now()).run();
+  await upsertGithubMirrorTarget(env.CONTROL_DB, { projectId, ownerSub:identity.sub, repository:input.repository, defaultBranch:project.default_branch, connectionRef:connection.id });
 }
 
 async function syncContext(env: ControlEnv, projectId: string): Promise<SyncContext> {

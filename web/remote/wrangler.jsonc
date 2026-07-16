@@ -50,6 +50,11 @@
     { "binding": "BACKUP_BUCKET", "bucket_name": "grok-build-backups-director-78b" },
     { "binding": "CONNECTOR_SECRETS", "bucket_name": "grok-build-connectors-director-78b" }
   ],
+  "queues": {
+    "consumers": [
+      { "queue": "grok-build-artifacts-events", "max_batch_size": 10, "max_batch_timeout": 5, "max_retries": 5 }
+    ]
+  },
   "migrations": [
     { "new_sqlite_classes": ["Sandbox"], "tag": "v1" },
     { "new_sqlite_classes": ["TaskHub"], "tag": "v2" }
@@ -63,7 +68,8 @@
     "BACKUP_BUCKET_NAME": "grok-build-backups-director-78b",
     "TASK_RETENTION_DAYS": "30",
     "MAX_CONCURRENT_TASKS": "5",
-    "TASK_TIMEOUT_MINUTES": "60"
+    "TASK_TIMEOUT_MINUTES": "60",
+    "STANDARD_3_COST_PER_HOUR_MICROS": "220032"
   },
   "observability": {
     "enabled": true,
