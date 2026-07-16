@@ -18,6 +18,7 @@ Protocol (ACP).
 
 [Installing the released binary](#installing-the-released-binary) ·
 [Building from source](#building-from-source) ·
+[Web workspace](#web-workspace) ·
 [Documentation](#documentation) ·
 [Repository layout](#repository-layout) ·
 [Development](#development) ·
@@ -47,6 +48,32 @@ grok --version
 
 See the [changelog](https://x.ai/build/changelog) for the latest fixes,
 features, and improvements in each release.
+
+## Web workspace
+
+This fork includes a browser-based Grok Build workspace in [`web/`](web/). It
+provides agent task history, an inspectable run transcript, permission scope,
+diff review, responsive preview, terminal evidence, and file navigation.
+
+The Cloudflare-hosted workspace adds versioned multi-repository environments,
+isolated task and subagent forks, read-only Plan Mode with exact-revision
+approval, independent commit review, scoped MCP grants, transparent rules and
+memory, revision-bound design annotations, cloud automations that never
+auto-promote, installable PWA/background status, and single-use approvals for
+consequential writes. Standard-3 containers sleep after inactivity, so compute
+is active only while a task or shared desktop is being used.
+
+Exact MCP tool grants, encrypted environment-secret scoping, task forks, and
+review-bound promotion are enforced by the control plane. Filesystem-root,
+general tool, and outbound-host policies remain visible audited intent where
+Cloudflare Sandbox does not expose an immutable mount or network-policy hook;
+the workspace reports that limitation instead of claiming runtime enforcement.
+
+```sh
+cd web
+npm install
+npm run dev
+```
 
 ## Building from source
 

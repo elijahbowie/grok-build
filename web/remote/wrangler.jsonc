@@ -1,0 +1,74 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "grok-build-runner",
+  "main": "src/index.ts",
+  "workers_dev": true,
+  "compatibility_date": "2026-07-16",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "../dist",
+    "run_worker_first": ["/api/*", "/v1/*", "/desktop/*", "/ws/*", "/automation/webhooks/*"]
+  },
+  "routes": [
+    { "pattern": "grok.forgeagent.app", "custom_domain": true },
+    { "pattern": "grok.forgeagent.app/*", "zone_name": "forgeagent.app" }
+  ],
+  "artifacts": [{ "binding": "ARTIFACTS", "namespace": "grok-build" }],
+  "d1_databases": [
+    {
+      "binding": "CONTROL_DB",
+      "database_name": "grok-build-control",
+      "database_id": "97fd306a-6285-4140-8595-f00f7d6f38c3",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "workflows": [
+    { "binding": "TASK_WORKFLOW", "name": "grok-build-task", "class_name": "TaskWorkflow" },
+    { "binding": "GITHUB_SYNC_WORKFLOW", "name": "grok-build-github-sync", "class_name": "GitHubSyncWorkflow" },
+    { "binding": "REVIEW_WORKFLOW", "name": "grok-build-review", "class_name": "ReviewWorkflow" },
+    { "binding": "PLAN_WORKFLOW", "name": "grok-build-plan", "class_name": "PlanningWorkflow" },
+    { "binding": "DESIGN_WORKFLOW", "name": "grok-build-design", "class_name": "DesignWorkflow" }
+  ],
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./Dockerfile",
+      "instance_type": "standard-3",
+      "max_instances": 5
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "class_name": "Sandbox", "name": "Sandbox" },
+      { "class_name": "TaskHub", "name": "TASK_HUB" }
+    ]
+  },
+  "r2_buckets": [
+    { "binding": "GROK_HOME_STORE", "bucket_name": "grok-build-subscription-director-78b" },
+    { "binding": "EVIDENCE_BUCKET", "bucket_name": "grok-build-evidence-director-78b" },
+    { "binding": "BACKUP_BUCKET", "bucket_name": "grok-build-backups-director-78b" },
+    { "binding": "CONNECTOR_SECRETS", "bucket_name": "grok-build-connectors-director-78b" }
+  ],
+  "migrations": [
+    { "new_sqlite_classes": ["Sandbox"], "tag": "v1" },
+    { "new_sqlite_classes": ["TaskHub"], "tag": "v2" }
+  ],
+  "vars": {
+    "ACCESS_EMAIL": "director@eicimpact.org",
+    "ARTIFACTS_NAMESPACE": "grok-build",
+    "PUBLIC_ORIGIN": "https://grok.forgeagent.app",
+    "MACHINE_ORIGIN": "https://grok-build-runner.director-78b.workers.dev",
+    "CLOUDFLARE_ACCOUNT_ID": "78b5cd80a13b55be136c10cb30e4012e",
+    "BACKUP_BUCKET_NAME": "grok-build-backups-director-78b",
+    "TASK_RETENTION_DAYS": "30",
+    "MAX_CONCURRENT_TASKS": "5",
+    "TASK_TIMEOUT_MINUTES": "60"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": { "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.1 }
+  },
+  "triggers": { "crons": ["*/5 * * * *"] }
+}
