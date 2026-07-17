@@ -1,7 +1,7 @@
 import { classifyPwaRequest, isSafeCacheResponse, pushText, safePushPayload } from "./pwa-policy.mjs";
 
-const CACHE_VERSION = "grok-build-shell-v2";
-const INSTALL_ASSETS = ["/design-polish.css", "/design-polish.js", "/manifest.webmanifest", "/offline.html", "/grok-build-icon.svg", "/grok-build-maskable.svg"];
+const CACHE_VERSION = "grok-build-shell-v1";
+const INSTALL_ASSETS = ["/manifest.webmanifest", "/offline.html", "/grok-build-icon.svg", "/grok-build-maskable.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_VERSION).then((cache) => cache.addAll(INSTALL_ASSETS)));

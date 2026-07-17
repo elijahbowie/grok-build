@@ -55,12 +55,16 @@
       { "queue": "grok-build-artifacts-events", "max_batch_size": 10, "max_batch_timeout": 5, "max_retries": 5 }
     ]
   },
+  "ratelimits": [
+    { "name": "AUTH_RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } }
+  ],
   "migrations": [
     { "new_sqlite_classes": ["Sandbox"], "tag": "v1" },
     { "new_sqlite_classes": ["TaskHub"], "tag": "v2" }
   ],
   "vars": {
-    "ACCESS_EMAIL": "director@eicimpact.org",
+    "AUTH_EMAIL": "director@eicimpact.org",
+    "AUTH_SUB": "4167902e-3eea-572e-9eb3-7246f8f340e3",
     "ARTIFACTS_NAMESPACE": "grok-build",
     "PUBLIC_ORIGIN": "https://grok.forgeagent.app",
     "MACHINE_ORIGIN": "https://grok-build-runner.director-78b.workers.dev",

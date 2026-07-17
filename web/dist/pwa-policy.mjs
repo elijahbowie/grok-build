@@ -1,5 +1,5 @@
 const PRIVATE_PATH = /^\/(?:api|desktop|evidence|secrets|terminal|preview|artifacts|mcp-proxy)(?:\/|$)/i;
-const STATIC_PATH = /^(?:\/assets\/[^?#]+\.(?:css|js|mjs|woff2?|png|jpg|jpeg|gif|webp|svg)|\/(?:design-polish\.css|manifest\.webmanifest|offline\.html|grok-build-icon\.svg|grok-build-maskable\.svg))$/i;
+const STATIC_PATH = /^(?:\/assets\/[^?#]+\.(?:css|js|mjs|woff2?|png|jpg|jpeg|gif|webp|svg)|\/(?:manifest\.webmanifest|offline\.html|grok-build-icon\.svg|grok-build-maskable\.svg))$/i;
 const IDENTIFIER = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,159}$/;
 export const ATTENTION_KINDS = ["task-completed", "task-failed", "approval-needed"];
 

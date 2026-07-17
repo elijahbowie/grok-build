@@ -3,15 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0b0c0c" />
+    <meta name="theme-color" content="#090b0b" />
     <meta name="description" content="Grok Build — an inspectable coding agent workspace for the web." />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/grok-build-icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/grok-build-icon.svg" />
+    <link rel="stylesheet" href="/design-polish.css" />
     <title>Grok Build</title>
   </head>
   <body>
-    <div id="root"></div>
+    <a class="skip-link" href="#root">Skip to workspace</a>
+    <div id="root" tabindex="-1"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script type="module" src="/design-polish.js"></script>
   </body>
 </html>

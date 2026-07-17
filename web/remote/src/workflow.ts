@@ -27,7 +27,7 @@ import { resolveTaskInputAttachments } from "./agent-jobs";
 import { emitTaskTelemetry } from "./telemetry";
 
 type TaskContext = { task: Task; project: Project; environment: ResolvedTaskEnvironment };
-type RunResult = { ok: boolean; exitCode: number; sessionId: string | null; stderr: string; evidenceKey: string; finalText:string; structuredOutput?:unknown };
+type RunResult = { ok: boolean; exitCode: number; sessionId: string | null; stderr: string; evidenceKey: string; finalText:string };
 
 const browserEvidenceTypes: Record<string, string> = {
   png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp",
@@ -265,7 +265,7 @@ async function runAgent(env: ControlEnv, item: TaskContext, fork: {name:string;r
     source:"grok-streaming-json", idempotencyKey:`model:${item.task.id}:${attempt}`,
     metadata:{ inputTokens:usage.inputTokens, outputTokens:usage.outputTokens },
   });
-  return { ok: result.success, exitCode: result.exitCode, sessionId: result.sessionId ?? sessionId, stderr: redactSecurityText(result.stderr.slice(-4000), secretValues(runtimeSecrets)), evidenceKey, finalText:result.finalText, structuredOutput:result.structuredOutput };
+  return { ok: result.success, exitCode: result.exitCode, sessionId: result.sessionId ?? sessionId, stderr: redactSecurityText(result.stderr.slice(-4000), secretValues(runtimeSecrets)), evidenceKey, finalText:result.finalText };
 }
 
 async function checkpointLatestUserMessage(db:D1Database,taskId:string,headSha:string,sessionId:string|null,executionPrompt:string) {

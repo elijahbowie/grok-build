@@ -11,13 +11,13 @@ Open <http://127.0.0.1:4173>. The service uses the repository containing this fo
 
 ## Cloud workspace
 
-The production workspace uses Cloudflare Access, Workers, Workflows, D1, R2, Artifacts, and Sandbox. Each task forks its project's canonical Artifacts repository, runs the pinned Grok CLI in a Standard-3 container, verifies and repairs its result, retains logs and browser evidence, and waits for explicit review before a fast-forward promotion. Force-push is never used.
+The production workspace uses application-owned email/password sessions, Cloudflare Workers, Workflows, D1, R2, Artifacts, and Sandbox. Each task forks its project's canonical Artifacts repository, runs the pinned Grok CLI in a Standard-3 container, verifies and repairs its result, retains logs and browser evidence, and waits for explicit review before a fast-forward promotion. Force-push is never used.
 
 Containers use `sleepAfter: "30s"`. A shared KasmVNC desktop and headed Playwright browser are started only for an active agent or an opened review desktop. The UI sends a heartbeat while the desktop is visible; TaskHub stops the desktop after 60 seconds without one. A sleeping or stopped container does not keep active compute allocated.
 
 The usage ledger uses a conservative Standard-3 upper bound of `220032` microdollars per active wall-clock hour. That assumes all 2 vCPUs are active plus the provisioned 8 GiB memory and 16 GB disk at Cloudflare's April 2026 list rates; Cloudflare bills actual active CPU and applies monthly included usage, so the dashboard labels this an upper bound rather than an invoice. Update `STANDARD_3_COST_PER_HOUR_MICROS` when list pricing changes.
 
-The browser-facing origin is `https://grok.forgeagent.app`. Cloudflare Access can use `ACCESS_EMAIL`, `ACCESS_EMAILS`, or `ACCESS_EMAIL_DOMAINS` as its membership allowlist; its application audience and team domain must be set as `ACCESS_AUD` and `ACCESS_TEAM_DOMAIN`. Machine callbacks use `https://grok-build-runner.director-78b.workers.dev` instead: GitHub webhooks are HMAC-verified, companion calls are device-signed, and MCP/CI proxy calls use short-lived task-scoped tokens.
+The browser-facing origin is `https://grok.forgeagent.app`. `AUTH_EMAIL` and `AUTH_SUB` identify the configured account; `AUTH_PASSWORD_HASH` contains a salted `pbkdf2-sha256$iterations$salt$hash` credential and `AUTH_SESSION_SECRET` signs 12-hour HTTP-only cookies. Native Worker rate limiting protects the login route, and unsafe session-authenticated requests require the configured `PUBLIC_ORIGIN`. Keep `AUTH_SUB` stable when rotating credentials so existing projects remain visible. Machine callbacks use `https://grok-build-runner.director-78b.workers.dev` instead: GitHub webhooks are HMAC-verified, companion calls are device-signed, and MCP/CI proxy calls use short-lived task-scoped tokens.
 
 Sandbox backups require an R2 Object Read & Write credential scoped to `grok-build-backups-director-78b`:
 
@@ -25,8 +25,8 @@ Sandbox backups require an R2 Object Read & Write credential scoped to `grok-bui
 cd web
 npx wrangler secret put R2_ACCESS_KEY_ID --config remote/wrangler.jsonc
 npx wrangler secret put R2_SECRET_ACCESS_KEY --config remote/wrangler.jsonc
-npx wrangler secret put ACCESS_AUD --config remote/wrangler.jsonc
-npx wrangler secret put ACCESS_TEAM_DOMAIN --config remote/wrangler.jsonc
+npx wrangler secret put AUTH_PASSWORD_HASH --config remote/wrangler.jsonc
+npx wrangler secret put AUTH_SESSION_SECRET --config remote/wrangler.jsonc
 npx wrangler queues create grok-build-artifacts-events --config remote/wrangler.jsonc
 npx wrangler d1 migrations apply grok-build-control --remote --config remote/wrangler.jsonc
 npm run remote:deploy

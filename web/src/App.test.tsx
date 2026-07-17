@@ -44,6 +44,25 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("Grok Build workspace", () => {
+  it("signs in with the configured email and password", async () => {
+    let authenticated = false;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/bootstrap" && !authenticated) return Promise.resolve(new Response(JSON.stringify({ error:"Authentication required" }), { status:401, headers:{ "content-type":"application/json" } }));
+      if (path === "/api/auth/login" && init?.method === "POST") { authenticated = true; return response({ authenticated:true }); }
+      if (path === "/api/bootstrap") return response(bootstrap);
+      if (path === "/api/tasks/task-1") return response(task);
+      if (path === "/api/tasks/task-1/diff") return response({ patch:"" });
+      return response({});
+    }));
+    render(<App />);
+    fireEvent.change(await screen.findByRole("textbox", { name:"Email" }), { target:{ value:"director@eicimpact.org" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target:{ value:"password" } });
+    fireEvent.click(screen.getByRole("button", { name:"Sign in" }));
+    expect(await screen.findByRole("main", { name:"Agent transcript" })).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith("/api/auth/login", expect.objectContaining({ method:"POST", body:JSON.stringify({ email:"director@eicimpact.org", password:"password" }) }));
+  });
+
   it("loads a real, inspectable task workspace", async () => {
     render(<App />);
     expect(await screen.findByRole("main", { name: "Agent transcript" })).toBeInTheDocument();
