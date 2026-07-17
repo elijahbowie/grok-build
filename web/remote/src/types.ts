@@ -15,6 +15,7 @@ export type Project = {
   source_url: string | null;
   config_json: string;
   github_json: string;
+  organization_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -47,11 +48,22 @@ export type Task = {
   patch_key: string | null;
   verification_key: string | null;
   backup_id: string | null;
+  model_profile_id: string | null;
+  output_schema_json: string | null;
+  max_turns: number | null;
+  allowed_tools_json: string;
+  denied_tools_json: string;
+  web_search_mode: "off" | "allow" | "require";
+  final_response: string | null;
+  structured_output_json: string | null;
+  final_stop_reason: string | null;
 };
 
 export type TaskWorkflowInput = {
   taskId: string;
   ownerSub: string;
+  sourceTaskId?: string;
+  sourceHeadSha?: string;
   planRevisionId?: string;
   subagentId?: string;
   parentTaskId?: string;
@@ -73,6 +85,8 @@ export type ControlEnv = Env & {
   BACKUP_BUCKET_NAME?: string;
   CONNECTOR_ENCRYPTION_KEY: string;
   STANDARD_3_COST_PER_HOUR_MICROS?: string;
+  OTLP_ENDPOINT?: string;
+  OTLP_AUTH_TOKEN?: string;
   REVIEW_WORKFLOW: Workflow<import("./review-workflow").ReviewWorkflowInput>;
   PLAN_WORKFLOW: Workflow<import("./planning-workflow").PlanningWorkflowInput>;
   DESIGN_WORKFLOW: Workflow<import("./design-workflow").DesignWorkflowInput>;

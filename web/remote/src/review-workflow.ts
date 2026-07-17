@@ -1,6 +1,6 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { now } from "./db";
-import { grokHome, loadSubscription, persistSubscription, sandboxFor, shell } from "./sandbox-runtime";
+import { loadSubscription, persistSubscription, sandboxFor, shell } from "./sandbox-runtime";
 import type { ControlEnv, Project, Task } from "./types";
 import {
   assertGitSha,
@@ -19,6 +19,8 @@ import {
 } from "./review";
 import { createTaskAttentionEvent } from "./notifications";
 import { publishReviewToScm } from "./review-publication";
+import { runHardenedAgent } from "./hardened-agent";
+import { redactSecurityText } from "./security-policy";
 
 export type ReviewWorkflowInput = { reviewRunId: string; taskId: string; ownerSub: string };
 
@@ -34,15 +36,6 @@ async function reviewContext(env: ControlEnv, input: ReviewWorkflowInput): Promi
   const project = await env.CONTROL_DB.prepare("SELECT * FROM projects WHERE id=? AND owner_sub=?").bind(task.project_id, input.ownerSub).first<Project>();
   if (!project) throw new Error("Project no longer exists");
   return { run, task, project };
-}
-
-function reviewerCommand(promptPath: string, cwd: string, model: string) {
-  return [
-    "grok", "--single", `\"$(cat ${shell(promptPath)})\"`, "--cwd", shell(cwd),
-    "--output-format", "streaming-json", "--model", shell(model), "--sandbox", "workspace",
-    "--permission-mode", "plan", "--deny", shell("Edit"), "--deny", shell("Write"),
-    "--deny", shell("Bash(git push*)"), "--deny", shell("Bash(gh *)"),
-  ].join(" ");
 }
 
 async function readRules(sandbox: ReturnType<typeof sandboxFor>, cwd: string): Promise<ReviewRuleSource[]> {
@@ -88,17 +81,15 @@ export async function executeIndependentReview(env: ControlEnv, item: ReviewCont
       taskTitle: item.task.title, taskPrompt: item.task.prompt, baseSha: item.run.base_sha, headSha: item.run.head_sha,
       diff: diffResult.stdout, verification: await verificationEvidence(env, item.task), rules,
     });
-    const promptPath = `/workspace/review-${item.run.id}.txt`;
-    await sandbox.writeFile(promptPath, prompt);
-    const result = await sandbox.exec(reviewerCommand(promptPath, cwd, item.task.model), { cwd, timeout: Number(env.TASK_TIMEOUT_MINUTES) * 60_000, env: { GROK_HOME: grokHome, NO_COLOR: "1" } });
+    const {acp,secrets}=await runHardenedAgent({env,sandbox,task:item.task,projectId:item.project.id,cwd,prompt,runtimeId:`review-${item.run.id}`,reviewOnly:true,includeRuntimeSecrets:false});
     await persistSubscription(env, sandbox);
-    const logBody = `${result.stdout}\n${result.stderr ? JSON.stringify({ type: "stderr", data: result.stderr }) : ""}`;
+    const logBody = [...acp.events.map((event)=>JSON.stringify(event)),JSON.stringify({type:"agent_result",data:{stopReason:acp.stopReason,finalText:acp.finalText}}),acp.stderr ? JSON.stringify({type:"stderr",data:acp.stderr}) : ""].filter(Boolean).join("\n");
     const outputKey = `tasks/${item.task.id}/reviews/${item.run.id}.jsonl`;
-    await env.EVIDENCE_BUCKET.put(outputKey, logBody, { httpMetadata: { contentType: "application/x-ndjson" } });
-    if (!result.success) throw new Error(`Independent reviewer failed (${result.exitCode}): ${result.stderr.slice(-4000)}`);
+    await env.EVIDENCE_BUCKET.put(outputKey, redactSecurityText(logBody,secrets), { httpMetadata: { contentType: "application/x-ndjson" } });
+    if (!acp.ok) throw new Error(`Independent reviewer failed (${acp.stopReason}): ${redactSecurityText(acp.stderr.slice(-4000),secrets)}`);
     const current = await env.CONTROL_DB.prepare("SELECT head_sha FROM tasks WHERE id=? AND owner_sub=?").bind(item.task.id, item.run.owner_sub).first<{head_sha:string|null}>();
     if (!current?.head_sha || assertGitSha(current.head_sha) !== item.run.head_sha) throw new Error("Task head changed while independent review was running");
-    return { output: parseReviewOutput(result.stdout), outputKey, patchDigest, rulesDigest };
+    return { output: parseReviewOutput(acp.finalText), outputKey, patchDigest, rulesDigest };
   } finally {
     await Promise.allSettled([taskRepository.revokeToken(taskToken.id), canonicalRepository.revokeToken(canonicalToken.id)]);
   }

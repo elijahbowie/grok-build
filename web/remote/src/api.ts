@@ -78,13 +78,17 @@ import { buildLiveTaskActivity, getNotificationPreferences, listTaskAttentionEve
 import { cancelDesignEditRequest, cancelDesignSession, completeDesignSession, createDesignAnnotation, createDesignElementReference, createDesignSelection, createDesignSession, getDesignEditRequest, getDesignSessionBundle, listTaskDesignSessions, queueDesignEditRequest, retryDesignEditRequest } from "./design-mode";
 import { ensureCanonicalArtifactsTarget, listScmEvents, listScmTargets } from "./scm";
 import { assertBudgetAllowsTask, upsertBudget, usageSummary } from "./usage";
-import { assignReview, attachProjectToOrganization, claimInvitedMemberships, createOrganization, decideReviewAssignment, listOrganizationMembers, listOrganizations, organizationAudit, requireProjectRole, upsertOrganizationMember } from "./organizations";
+import { assignReview, attachProjectToOrganization, claimInvitedMemberships, createOrganization, decideReviewAssignment, listOrganizationMembers, listOrganizations, organizationAudit, requireOrganizationRole, requireProjectRole, upsertOrganizationMember } from "./organizations";
 import { createAgentApiKey, listAgentApiKeys, revokeAgentApiKey } from "./agent-api-auth";
 import { createScmAutomationTrigger, listScmAutomationTriggers } from "./scm-events";
 import { listAutomationDeliveries } from "./automation-delivery";
 import { approveRuleCandidate, createMarketplaceItem, createTaskShare, indexTaskForSearch, installMarketplaceItem, listMarketplace, revokeTaskShare, searchTasks, setMarketplaceTrust } from "./knowledge-collaboration";
+import { createExecutableSessionTask, findTaskSession, forkTaskSession, getTaskSession, renameTaskSession, renderSessionMarkdown, rewindTaskSession, searchTaskSessions } from "./session-lifecycle";
 import { listReviewPublications, recordReviewFeedback } from "./review-publication";
 import { createAgentWebhook, disableAgentWebhook, listAgentWebhooks } from "./agent-webhooks";
+import { attachAgentJobInputs, presentAgentJobContract, validateAgentJobContract, validateModelProfileSelection } from "./agent-jobs";
+import { createModelProfile, listModelProfiles, setModelProfileAllowed, type ModelProfileInput } from "./model-profiles";
+import { getManagedRuntimePolicy, pinTaskRuntime, saveManagedRuntimePolicy } from "./task-runtime";
 
 const jsonHeaders = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 
@@ -196,13 +200,16 @@ function presentTask(task: Task, project?: Project, events: Awaited<ReturnType<t
   let changedFiles: {path:string;status:string;additions:number;deletions:number}[] = [];
   try { changedFiles = JSON.parse(task.changed_files_json || "[]"); } catch { /* malformed legacy state is displayed as empty */ }
   const status = task.status === "completed" ? "published" : ["preparing", "running", "repairing"].includes(task.status) ? "running" : task.status;
+  let structuredOutput:unknown=null;
+  try { structuredOutput=task.structured_output_json ? JSON.parse(task.structured_output_json) : null; } catch { structuredOutput=null; }
   return {
     id: task.id, projectId: task.project_id, title: task.title, prompt: task.prompt, source: "cloud", status,
     branch: task.task_repo || "Preparing task fork", baseBranch: project?.default_branch || "main", model: task.model,
     permissionMode: task.permission_mode, executionTarget: "remote", createdAt: task.created_at, updatedAt: task.updated_at,
-    sessionId: task.session_id, stopReason: null, error: task.error, additions: task.additions || 0, deletions: task.deletions || 0,
+    sessionId: task.session_id, stopReason: task.final_stop_reason || null, error: task.error, additions: task.additions || 0, deletions: task.deletions || 0,
     baseSha: task.base_sha, headSha: task.head_sha,
-    changedFiles, pr: null, preview: null, messages: [], terminalRuns: [], usage: null, cost: null,
+    changedFiles, pr: null, preview: null, messages: [], terminalRuns: [], usage: null, cost: null, job:presentAgentJobContract(task),
+    result:{ finalText:task.final_response || null, structuredOutput },
     events: events.map((event) => ({ id: `${task.id}-${event.seq}`, type: event.type, data: typeof event.data === "string" ? event.data : JSON.stringify(event.data), at: event.createdAt })),
   };
 }
@@ -295,7 +302,7 @@ async function createProject(request: Request, env: ControlEnv, identity: Identi
 }
 
 async function createTask(request: Request, env: ControlEnv, identity: Identity) {
-  const input = await requestBody<{ projectId?: string; title?: string; prompt?: string; model?: string; permissionMode?: Task["permission_mode"]; mode?:"build"|"plan"; environmentVersionId?: string; targetRepositoryId?: string; securityPolicyRevisionId?: string; visibleMemoryIds?:string[]; requestedRuleIds?:string[]; manualRuleIds?:string[] }>(request);
+  const input = await requestBody<{ projectId?: string; title?: string; prompt?: string; model?: string; permissionMode?: Task["permission_mode"]; mode?:"build"|"plan"; environmentVersionId?: string; targetRepositoryId?: string; securityPolicyRevisionId?: string; visibleMemoryIds?:string[]; requestedRuleIds?:string[]; manualRuleIds?:string[]; modelProfileId?:string|null; outputSchema?:unknown; maxTurns?:number|null; allowedTools?:unknown; deniedTools?:unknown; webSearch?:"off"|"allow"|"require"; attachmentIds?:unknown }>(request);
   const project = input.projectId ? await getProject(env.CONTROL_DB, identity.sub, input.projectId) : null;
   const prompt = input.prompt?.trim();
   const title = input.title?.trim().slice(0, 160) || prompt?.split("\n")[0].slice(0, 100);
@@ -303,6 +310,9 @@ async function createTask(request: Request, env: ControlEnv, identity: Identity)
   try { await requireProjectRole(env.CONTROL_DB, identity, project.id, input.permissionMode === "review-only" ? "reviewer" : "developer"); }
   catch (error) { return json({ error:error instanceof Error ? error.message : "Project role is insufficient" }, 403); }
   const workspaceOwner = project.owner_sub;
+  let job:ReturnType<typeof validateAgentJobContract>; let selectedProfile:Awaited<ReturnType<typeof validateModelProfileSelection>>;
+  try { job = validateAgentJobContract(input); selectedProfile = await validateModelProfileSelection(env, workspaceOwner, project.id, job.modelProfileId); }
+  catch (error) { return json({ error:error instanceof Error ? error.message : "Invalid agent job contract" }, 400); }
   await assertBudgetAllowsTask(env.CONTROL_DB, { ownerSub:workspaceOwner, projectId:project.id });
   if (!(await env.ARTIFACTS.get(project.artifact_repo)).lastPushAt) return json({ error: "This project is not ready. Push its first commit before starting a task." }, 409);
   const active = await env.CONTROL_DB.prepare("SELECT COUNT(*) AS count FROM tasks WHERE status IN ('queued','preparing','running','repairing')").first<{count:number}>();
@@ -319,15 +329,17 @@ async function createTask(request: Request, env: ControlEnv, identity: Identity)
   const workflowId = input.mode === "plan" ? `plan-${taskId}` : `task-${taskId}`;
   const timestamp = now();
   await env.CONTROL_DB.batch([
-    env.CONTROL_DB.prepare("INSERT INTO tasks (id, owner_sub, project_id, workflow_id, title, prompt, status, model, permission_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)").bind(taskId, workspaceOwner, project.id, workflowId, title, effectivePrompt, input.model?.trim() || "grok-4.5", input.permissionMode ?? "isolated-write", timestamp, timestamp),
+    env.CONTROL_DB.prepare("INSERT INTO tasks (id, owner_sub, project_id, workflow_id, title, prompt, status, model, permission_mode, model_profile_id, output_schema_json, max_turns, allowed_tools_json, denied_tools_json, web_search_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(taskId, workspaceOwner, project.id, workflowId, title, effectivePrompt, selectedProfile?.modelId || input.model?.trim() || "grok-4.5", input.permissionMode ?? "isolated-write", job.modelProfileId, job.outputSchema ? JSON.stringify(job.outputSchema) : null, job.maxTurns, JSON.stringify(job.allowedTools), JSON.stringify(job.deniedTools), job.webSearch, timestamp, timestamp),
     env.CONTROL_DB.prepare("INSERT INTO messages (id, task_id, role, body, created_at) VALUES (?, ?, 'user', ?, ?)").bind(id("msg"), taskId, prompt, timestamp),
     env.CONTROL_DB.prepare("INSERT INTO task_events (task_id, seq, type, data_json, created_at) VALUES (?, 1, 'task.queued', '{}', ?)").bind(taskId, timestamp),
   ]);
   try {
+    await attachAgentJobInputs(env.CONTROL_DB, workspaceOwner, taskId, job.attachmentIds);
     await ensureProjectConfiguration(env, workspaceOwner, project.id);
     await Promise.all([
       resolveTaskEnvironment(env.CONTROL_DB, workspaceOwner, taskId, { environmentVersionId: input.environmentVersionId, targetRepositoryId: input.targetRepositoryId }),
       pinTaskSecurityPolicy(env.CONTROL_DB, { taskId, ownerSub: workspaceOwner, revisionId: input.securityPolicyRevisionId }),
+      pinTaskRuntime(env.CONTROL_DB,{taskId,projectId:project.id,ownerSub:workspaceOwner}),
     ]);
     await appendRulesMemoryAudit(env.CONTROL_DB, { ownerSub: workspaceOwner, actorSub: identity.sub, projectId: project.id, entityType: "context", entityId: taskId, action: "task.context-resolved", detail: { provenance: resolvedContext.provenance, omitted: resolvedContext.omitted, privacyMode: resolvedContext.privacyMode, usedCharacters: resolvedContext.usedCharacters } });
     if (input.mode === "plan") { await initializePlanExecution(env.CONTROL_DB, { taskId, ownerSub: workspaceOwner, actorSub: identity.sub }); await env.PLAN_WORKFLOW.create({ id: workflowId, params: { taskId, ownerSub: workspaceOwner }, retention: { successRetention: "30 days", errorRetention: "30 days" } }); }
@@ -415,6 +427,50 @@ export async function controlRoute(request: Request, env: ControlEnv, identity: 
   }
   if (url.pathname === "/api/projects" && request.method === "GET") return json({ projects: await listProjects(env.CONTROL_DB, identity.sub) });
   if (url.pathname === "/api/projects" && request.method === "POST") return createProject(request, env, identity);
+  if (url.pathname === "/api/managed-runtime-policy" && (request.method === "GET" || request.method === "PUT")) {
+    const input=request.method === "GET"
+      ? {scopeType:url.searchParams.get("scopeType"),scopeId:url.searchParams.get("scopeId"),policy:undefined}
+      : await requestBody<{scopeType?:string;scopeId?:string;policy?:unknown}>(request);
+    if (!input.scopeType || !["organization","project","member"].includes(input.scopeType) || !input.scopeId) return json({error:"scopeType and scopeId are required"},400);
+    try {
+      const scope={scopeType:input.scopeType as "organization"|"project"|"member",scopeId:input.scopeId};
+      if (request.method === "GET") return json({revision:await getManagedRuntimePolicy(env.CONTROL_DB,identity,scope)});
+      return json(await saveManagedRuntimePolicy(env.CONTROL_DB,identity,{...scope,policy:input.policy}),201);
+    } catch(error) { return json({error:error instanceof Error?error.message:"Managed runtime policy failed"},403); }
+  }
+  if (url.pathname === "/api/model-profiles" && request.method === "GET") {
+    const projectId=url.searchParams.get("projectId"); const project=projectId ? await getProject(env.CONTROL_DB,identity.sub,projectId) : null;
+    if (projectId && !project) return json({error:"Project not found"},404);
+    return json({ profiles:await listModelProfiles(env.CONTROL_DB, project?.owner_sub || identity.sub, projectId) });
+  }
+  if (url.pathname === "/api/model-profiles" && request.method === "POST") {
+    const input = await requestBody<ModelProfileInput>(request);
+    const project=input.projectId ? await getProject(env.CONTROL_DB, identity.sub, input.projectId) : null;
+    if (input.projectId && !project) return json({ error:"Project not found" }, 404);
+    try {
+      if (project) await requireProjectRole(env.CONTROL_DB,identity,project.id,"developer");
+      else if (input.organizationId) {
+        const membership=await env.CONTROL_DB.prepare("SELECT role FROM organization_memberships WHERE organization_id=? AND member_sub=? AND status='active'").bind(input.organizationId,identity.sub).first<{role:string}>();
+        if (!membership || !["owner","admin","developer"].includes(membership.role)) throw new Error("Organization developer access is required");
+      }
+      return json(await createModelProfile(env, project?.owner_sub || identity.sub, { ...input, organizationId:project?.organization_id ?? input.organizationId }), 201);
+    }
+    catch (error) { return json({ error:error instanceof Error ? error.message : "Invalid model profile" }, 400); }
+  }
+  const modelAllowedMatch = url.pathname.match(/^\/api\/model-profiles\/([^/]+)\/allowed$/);
+  if (modelAllowedMatch && request.method === "PATCH") {
+    const input = await requestBody<{allowed?:boolean}>(request);
+    if (typeof input.allowed !== "boolean") return json({ error:"allowed must be a boolean" }, 400);
+    try {
+      const profile=await env.CONTROL_DB.prepare("SELECT owner_sub, organization_id, project_id FROM model_profiles WHERE id=?").bind(modelAllowedMatch[1]).first<{owner_sub:string;organization_id:string|null;project_id:string|null}>();
+      if (!profile) throw new Error("Model profile not found");
+      if (profile.project_id) { if (!await getProject(env.CONTROL_DB,identity.sub,profile.project_id)) throw new Error("Model profile not found"); await requireProjectRole(env.CONTROL_DB,identity,profile.project_id,"developer"); }
+      else if (profile.organization_id) await requireOrganizationRole(env.CONTROL_DB,identity,profile.organization_id,"developer");
+      else if (profile.owner_sub !== identity.sub) throw new Error("Model profile not found");
+      await setModelProfileAllowed(env.CONTROL_DB, profile.owner_sub, modelAllowedMatch[1], input.allowed); return json({ id:modelAllowedMatch[1], allowed:input.allowed });
+    }
+    catch (error) { return json({ error:error instanceof Error ? error.message : "Model profile not found" }, 404); }
+  }
   if (url.pathname === "/api/organizations" && request.method === "GET") return json({ organizations:await listOrganizations(env.CONTROL_DB, identity) });
   if (url.pathname === "/api/organizations" && request.method === "POST") {
     const input = await requestBody<{name?:string}>(request);
@@ -680,7 +736,7 @@ export async function controlRoute(request: Request, env: ControlEnv, identity: 
         getActiveSecurityPolicy(env.CONTROL_DB, identity.sub, securityPolicyMatch[1]),
         listSecurityPolicyRevisions(env.CONTROL_DB, identity.sub, securityPolicyMatch[1]),
       ]);
-      return json({ active, revisions, enforcement: { repositoryWrites: "advisory-readonly-context", commandPermissions: "audited-policy-intent", environmentSecrets: "encrypted-r2-scoped-injection", outboundNetwork: "platform-unavailable", detail: "Exact MCP grants and secret scoping are enforced. Cloudflare Sandbox SDK 0.12.3 does not expose immutable sibling mounts, per-sandbox outbound host enforcement, or a policy compiler hook; filesystem, host, and general tool policy remain visible audited intent." } });
+      return json({ active, revisions, enforcement: { repositoryWrites: "non-root-strict-sandbox", commandPermissions: "native-grok-allow-deny", environmentSecrets: "encrypted-r2-scoped-injection", outboundNetwork: "child-network-blocked-domain-scoped-fetch", detail: "Each task runs as a non-root user under Grok's strict kernel sandbox. Existing denied task paths are sealed before launch, shell child networking is blocked, WebFetch is limited to pinned public domains, and exact MCP grants remain enforced at the credential proxy." } });
     } catch (error) { return json({ error: error instanceof Error ? error.message : "Security policy failed" }, 404); }
   }
   if (securityPolicyMatch && request.method === "PUT") {
@@ -783,6 +839,50 @@ export async function controlRoute(request: Request, env: ControlEnv, identity: 
     return json({ tasks: tasks.map((task) => presentTask(task, projectById.get(task.project_id))) });
   }
   if (url.pathname === "/api/tasks" && request.method === "POST") return createTask(request, env, identity);
+  if (url.pathname === "/api/sessions/search" && request.method === "GET") {
+    try { return json({ sessions:await searchTaskSessions(env.CONTROL_DB,identity.sub,url.searchParams.get("q") || "",url.searchParams.get("projectId") || undefined) }); }
+    catch (error) { return json({ error:error instanceof Error ? error.message : "Session search failed" },400); }
+  }
+  const taskSessionMatch=url.pathname.match(/^\/api\/tasks\/([^/]+)\/session$/);
+  if (taskSessionMatch && request.method === "GET") {
+    const task=await getTask(env.CONTROL_DB,identity.sub,taskSessionMatch[1]); if (!task) return json({error:"Task not found"},404);
+    const session=await findTaskSession(env.CONTROL_DB,identity.sub,task.id); return session ? json(session) : json({error:"Task has no durable session yet"},404);
+  }
+  const taskSessionActionMatch=url.pathname.match(/^\/api\/tasks\/([^/]+)\/session\/(fork|rewind)$/);
+  if (taskSessionActionMatch && request.method === "POST") {
+    const task=await getTask(env.CONTROL_DB,identity.sub,taskSessionActionMatch[1]); if (!task) return json({error:"Task not found"},404);
+    try { await requireProjectRole(env.CONTROL_DB,identity,task.project_id,"developer"); const input=await requestBody<{promptMessageId?:string;sessionId?:string;name?:string}>(request);
+      await assertBudgetAllowsTask(env.CONTROL_DB,{ownerSub:task.owner_sub,projectId:task.project_id});
+      const active=await env.CONTROL_DB.prepare("SELECT COUNT(*) count FROM tasks WHERE status IN ('queued','preparing','running','repairing')").first<{count:number}>();
+      if ((active?.count ?? 0) >= Number(env.MAX_CONCURRENT_TASKS)) return json({error:"The five-task cloud concurrency limit is in use"},429);
+      let lifecycle;
+      if (taskSessionActionMatch[2] === "fork") lifecycle=await forkTaskSession(env.CONTROL_DB,{task,actorSub:identity.sub,promptMessageId:input.promptMessageId,name:input.name});
+      else {
+      if (!input.promptMessageId) return json({error:"Rewind requires an exact retained user prompt"},400);
+        lifecycle=await rewindTaskSession(env.CONTROL_DB,{task,actorSub:identity.sub,sessionId:input.sessionId,promptMessageId:input.promptMessageId});
+      }
+      const execution=await createExecutableSessionTask(env.CONTROL_DB,{task,revision:lifecycle.revision,actorSub:identity.sub});
+      try { await env.TASK_WORKFLOW.create({id:execution.workflowId,params:{taskId:execution.taskId,ownerSub:task.owner_sub,sourceTaskId:execution.sourceTaskId,sourceHeadSha:execution.sourceHeadSha},retention:{successRetention:"30 days",errorRetention:"30 days"}}); }
+      catch (error) { await updateTask(env.CONTROL_DB,execution.taskId,"failed",{error:error instanceof Error ? error.message : "Session task workflow creation failed"}); throw error; }
+      await broadcast(env,task.owner_sub,{type:"task.queued",taskId:execution.taskId});
+      const project=await getProject(env.CONTROL_DB,identity.sub,task.project_id);
+      return json({...lifecycle,task:presentTask((await getTask(env.CONTROL_DB,identity.sub,execution.taskId))!,project || undefined)},202);
+    } catch (error) { return json({error:error instanceof Error ? error.message : "Session lifecycle action failed"},400); }
+  }
+  const sessionExportMatch=url.pathname.match(/^\/api\/sessions\/([^/]+)\/export$/);
+  if (sessionExportMatch && request.method === "GET") {
+    const bundle=await getTaskSession(env.CONTROL_DB,identity.sub,sessionExportMatch[1]); if (!bundle) return json({error:"Session not found"},404);
+    const format=url.searchParams.get("format") || "json"; if (!['json','markdown'].includes(format)) return json({error:"Session export format must be json or markdown"},400);
+    const body=format === "markdown" ? renderSessionMarkdown(bundle) : JSON.stringify(bundle,null,2); const extension=format === "markdown" ? "md" : "json";
+    return new Response(body,{headers:{"content-type":format === "markdown" ? "text/markdown; charset=utf-8" : "application/json; charset=utf-8","content-disposition":`attachment; filename="grok-session-${bundle.session.id}.${extension}"`,"cache-control":"private, no-store","x-content-type-options":"nosniff"}});
+  }
+  const sessionMatch=url.pathname.match(/^\/api\/sessions\/([^/]+)$/);
+  if (sessionMatch && request.method === "GET") { const bundle=await getTaskSession(env.CONTROL_DB,identity.sub,sessionMatch[1]); return bundle ? json(bundle) : json({error:"Session not found"},404); }
+  if (sessionMatch && request.method === "PUT") {
+    const bundle=await getTaskSession(env.CONTROL_DB,identity.sub,sessionMatch[1]); if (!bundle) return json({error:"Session not found"},404);
+    try { await requireProjectRole(env.CONTROL_DB,identity,bundle.session.projectId,"developer"); const input=await requestBody<{name?:string}>(request); return json(await renameTaskSession(env.CONTROL_DB,identity.sub,bundle.session.id,input.name)); }
+    catch (error) { return json({error:error instanceof Error ? error.message : "Session rename failed"},400); }
+  }
   const followupMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/followups$/);
   if (followupMatch && request.method === "POST") {
     const task = await getTask(env.CONTROL_DB, identity.sub, followupMatch[1]);
@@ -799,7 +899,7 @@ export async function controlRoute(request: Request, env: ControlEnv, identity: 
       env.CONTROL_DB.prepare("INSERT INTO messages (id, task_id, role, body, created_at) VALUES (?, ?, 'user', ?, ?)").bind(id("msg"), task.id, prompt, timestamp),
       env.CONTROL_DB.prepare("INSERT INTO task_events (task_id, seq, type, data_json, created_at) SELECT ?, COALESCE(MAX(seq),0)+1, 'task.followup-queued', ?, ? FROM task_events WHERE task_id=?").bind(task.id, JSON.stringify({ workflowId }), timestamp, task.id),
     ]);
-    await env.TASK_WORKFLOW.create({ id:workflowId, params:{ taskId:task.id, ownerSub:task.owner_sub }, retention:{ successRetention:"30 days", errorRetention:"30 days" } });
+    await env.TASK_WORKFLOW.create({ id:workflowId, params:{ taskId:task.id, ownerSub:task.owner_sub, ...(task.task_repo && task.head_sha ? {sourceTaskId:task.id,sourceHeadSha:task.head_sha} : {}) }, retention:{ successRetention:"30 days", errorRetention:"30 days" } });
     return json(presentTask((await getTask(env.CONTROL_DB, identity.sub, task.id))!, await getProject(env.CONTROL_DB, identity.sub, task.project_id) || undefined), 202);
   }
   const taskMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)$/);

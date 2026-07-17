@@ -14,14 +14,20 @@ import { createTaskAttentionEvent } from "./notifications";
 import { discoverRepositoryRules, resolvePromptContext } from "./rules-memory";
 import { updateAutomationRun } from "./cloud-automations";
 import { resolveEnvironmentSecretValues, secretValues } from "./environment-secrets";
-import { redactSecurityText } from "./security-policy";
+import { getTaskSecurityPolicy, redactSecurityText } from "./security-policy";
+import { applyJobToolContract, assertStrictSandboxFilesystemPolicy, nativePermissionConfig, permissionCliArgs } from "./runtime-security";
 import { drainAutomationQueue } from "./automation-runtime";
 import { deliverAutomationEvent } from "./automation-delivery";
 import { indexTaskForSearch } from "./knowledge-collaboration";
 import { deliverAgentWebhookEvent } from "./agent-webhooks";
+import { runAcpPrompt } from "./acp-runtime";
+import { prepareTaskRuntime } from "./task-runtime";
+import { resolveModelProfile } from "./model-profiles";
+import { resolveTaskInputAttachments } from "./agent-jobs";
+import { emitTaskTelemetry } from "./telemetry";
 
 type TaskContext = { task: Task; project: Project; environment: ResolvedTaskEnvironment };
-type RunResult = { ok: boolean; exitCode: number; sessionId: string | null; stderr: string; evidenceKey: string };
+type RunResult = { ok: boolean; exitCode: number; sessionId: string | null; stderr: string; evidenceKey: string; finalText:string; structuredOutput?:unknown };
 
 const browserEvidenceTypes: Record<string, string> = {
   png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp",
@@ -41,7 +47,7 @@ async function context(env: ControlEnv, input: TaskWorkflowInput): Promise<TaskC
   return { task, project, environment };
 }
 
-async function taskFork(env: ControlEnv, item: TaskContext, sourceArtifactRepo = item.project.artifact_repo) {
+async function taskFork(env: ControlEnv, item: TaskContext, sourceArtifactRepo = item.project.artifact_repo, sourceHeadSha?:string) {
   const name = `task-${item.task.id.replace(/^tsk_/, "").slice(0, 40)}`;
   let remote: string;
   let token: string;
@@ -56,25 +62,42 @@ async function taskFork(env: ControlEnv, item: TaskContext, sourceArtifactRepo =
     remote = repo.remote;
     token = minted.plaintext;
   }
-  return { name, remote, token };
+  return { name, remote, token, branch:sourceHeadSha ? `session-${item.task.id.replace(/^tsk_/, "").slice(0, 40)}` : item.project.default_branch, sourceHeadSha };
 }
 
-function grokCommand(promptPath: string, cwd: string, task: Task, sessionId?: string | null) {
-  const args = ["grok", "--single", `\"$(cat ${shell(promptPath)})\"`, "--cwd", shell(cwd), "--output-format", "streaming-json", "--model", shell(task.model), "--sandbox", "workspace", "--permission-mode", task.permission_mode === "review-only" ? "plan" : "bypassPermissions"];
-  if (task.permission_mode === "review-only") args.push("--deny", shell("Edit"), "--deny", shell("Write"), "--deny", shell("Bash(*)"));
-  else args.push("--deny", shell("Bash(git push*)"), "--deny", shell("Bash(gh *)"));
-  if (sessionId) args.push("--resume", shell(sessionId));
-  return args.join(" ");
+function tomlString(value:string) { return JSON.stringify(value); }
+
+async function runtimeDigest(value:unknown) {
+  const bytes=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(JSON.stringify(value)));
+  return [...new Uint8Array(bytes)].map((byte)=>byte.toString(16).padStart(2,"0")).join("");
 }
 
-function sessionFrom(output: string, fallback: string | null) {
-  for (const line of output.trim().split("\n").reverse()) {
-    try {
-      const event = JSON.parse(line) as { session_id?: string };
-      if (event.session_id) return event.session_id;
-    } catch { /* non-JSON agent output is retained as evidence */ }
+function modelConfig(profile:Awaited<ReturnType<typeof resolveModelProfile>>, alias:string) {
+  const backend = profile.backend === "openai-responses" ? "responses" : profile.backend === "anthropic" ? "messages" : "chat_completions";
+  const lines = [`[model.${tomlString(alias)}]`, `model = ${tomlString(profile.modelId)}`, `name = ${tomlString(profile.name)}`, `base_url = ${tomlString(profile.baseUrl!)}`, `api_backend = ${tomlString(backend)}`];
+  if (profile.contextWindow) lines.push(`context_window = ${profile.contextWindow}`);
+  if (profile.backend === "anthropic" && profile.credential) lines.push(`extra_headers = { "x-api-key" = ${tomlString(profile.credential)}, "anthropic-version" = "2023-06-01" }`);
+  else if (profile.credential) lines.push('env_key = "GROK_BUILD_MODEL_API_KEY"');
+  return `${lines.join("\n")}\n`;
+}
+
+function bytesToBase64(bytes:Uint8Array) {
+  let binary = "";
+  for (let index=0; index<bytes.length; index+=0x8000) binary += String.fromCharCode(...bytes.subarray(index, index+0x8000));
+  return btoa(binary);
+}
+
+async function attachmentPromptBlocks(env:ControlEnv, task:Task, sandbox:ReturnType<typeof sandboxFor>, prompt:string) {
+  const attachments = await resolveTaskInputAttachments(env.CONTROL_DB, task.owner_sub, task.id);
+  const blocks:Array<Record<string,unknown>> = [{type:"text",text:prompt}];
+  for (const attachment of attachments) {
+    const object = await env.EVIDENCE_BUCKET.get(attachment.r2Key);
+    if (!object) throw new Error(`Task input ${attachment.id} is unavailable`);
+    const data = bytesToBase64(new Uint8Array(await object.arrayBuffer()));
+    if (attachment.kind === "image") blocks.push({type:"image",data,mimeType:attachment.contentType,uri:`grok-build-input:${attachment.id}`});
+    else blocks.push({type:"resource",resource:{blob:data,mimeType:attachment.contentType,uri:`grok-build-input:${attachment.id}`}});
   }
-  return fallback;
+  return blocks;
 }
 
 function taskDirectory(item: TaskContext) {
@@ -83,7 +106,7 @@ function taskDirectory(item: TaskContext) {
   return `/workspace/${target.checkoutPath}`;
 }
 
-async function prepareEnvironment(env: ControlEnv, item: TaskContext, fork: {remote:string;token:string}) {
+async function prepareEnvironment(env: ControlEnv, item: TaskContext, fork: {remote:string;token:string;branch:string;sourceHeadSha?:string}) {
   const sandbox = sandboxFor(env, item.task.id);
   const targetDirectory = taskDirectory(item);
   const marker = `/workspace/.grok-environment-${item.environment.manifestHash}`;
@@ -92,8 +115,12 @@ async function prepareEnvironment(env: ControlEnv, item: TaskContext, fork: {rem
   for (const repository of item.environment.repositories) {
     const directory = `/workspace/${repository.checkoutPath}`;
     if (repository.id === item.environment.targetRepositoryId) {
-      const clone = await sandbox.exec(`rm -rf ${shell(directory)} && git -c http.extraHeader=${shell(`Authorization: Bearer ${fork.token}`)} clone --branch ${shell(repository.ref)} --single-branch ${shell(fork.remote)} ${shell(directory)}`, { timeout: 180_000 });
+      const clone = await sandbox.exec(`rm -rf ${shell(directory)} && git -c http.extraHeader=${shell(`Authorization: Bearer ${fork.token}`)} clone ${fork.sourceHeadSha ? "" : `--branch ${shell(repository.ref)} --single-branch `}${shell(fork.remote)} ${shell(directory)}`, { timeout: 180_000 });
       if (!clone.success) throw new Error(`Writable environment repository failed to clone: ${clone.stderr.slice(-1200)}`);
+      if (fork.sourceHeadSha) {
+        const checkout = await sandbox.exec(`git cat-file -e ${shell(`${fork.sourceHeadSha}^{commit}`)} && git checkout -B ${shell(fork.branch)} ${shell(fork.sourceHeadSha)} && test "$(git rev-parse HEAD)" = ${shell(fork.sourceHeadSha)}`, { cwd:directory,timeout:120_000 });
+        if (!checkout.success) throw new Error("Retained session source SHA is unavailable in the source task repository");
+      }
     } else if (repository.sourceType === "github") {
       const clone = await sandbox.exec(`rm -rf ${shell(directory)} && git clone --branch ${shell(repository.ref)} --single-branch ${shell(repository.sourceUrl!)} ${shell(directory)}`, { timeout: 180_000 });
       if (!clone.success) throw new Error(`Environment repository ${repository.name} failed to clone: ${clone.stderr.slice(-1200)}`);
@@ -138,34 +165,81 @@ async function repositoryRuleContext(sandbox: ReturnType<typeof sandboxFor>, cwd
   return resolvePromptContext({ rules: [], repositoryRules: repositoryRules.rules, repositoryPath: "repository", privacyMode: true }).content;
 }
 
-async function runAgent(env: ControlEnv, item: TaskContext, fork: {name:string;remote:string;token:string}, prompt: string, attempt: number, sessionId: string | null): Promise<RunResult> {
+async function persistAcpConversation(db:D1Database, taskId:string, attempt:number, acp:{events:Array<Record<string,unknown>>;finalText:string;structuredOutput?:unknown;stopReason:string}, secrets:string[]) {
+  const messages:Array<{role:"tool"|"assistant";body:string}> = [];
+  for (const event of acp.events) {
+    if (event.type!=="session_update" || !event.data || typeof event.data!=="object") continue;
+    const update=(event.data as {update?:{sessionUpdate?:string}}).update;
+    if (update?.sessionUpdate!=="tool_call" && update?.sessionUpdate!=="tool_call_update") continue;
+    messages.push({role:"tool",body:redactSecurityText(JSON.stringify(update).slice(0,20_000),secrets)});
+  }
+  const structured=acp.structuredOutput===undefined ? null : JSON.stringify(acp.structuredOutput);
+  const finalText=redactSecurityText((acp.finalText || structured || "").trim().slice(0,100_000),secrets);
+  if (finalText) messages.push({role:"assistant",body:finalText});
+  const base=Date.now();
+  for (const [index,message] of messages.entries()) {
+    const digest=await runtimeDigest({taskId,attempt,index,role:message.role,body:message.body});
+    await db.prepare("INSERT OR IGNORE INTO messages (id,task_id,role,body,created_at) VALUES (?,?,?,?,?)")
+      .bind(`msg_acp_${digest.slice(0,32)}`,taskId,message.role,message.body,new Date(base+index).toISOString()).run();
+  }
+  await db.prepare("UPDATE tasks SET final_response=?,structured_output_json=?,final_stop_reason=?,updated_at=? WHERE id=?")
+    .bind(finalText || null,structured ? redactSecurityText(structured,secrets) : null,acp.stopReason,now(),taskId).run();
+}
+
+async function runAgent(env: ControlEnv, item: TaskContext, fork: {name:string;remote:string;token:string;branch:string;sourceHeadSha?:string}, prompt: string, attempt: number, sessionId: string | null): Promise<RunResult> {
   const sandbox = sandboxFor(env, item.task.id);
   if (!await loadSubscription(env, sandbox)) throw new Error("Cloud Grok subscription is signed out");
   const cwd = await prepareEnvironment(env, item, fork);
   const desktop = await ensureDesktop(sandbox, item.task.id);
   const activeStarted = Date.now();
-  const containerSessionId = await openContainerSession(env.CONTROL_DB, { ownerSub:item.task.owner_sub, projectId:item.project.id, taskId:item.task.id, sandboxId:`grok-${item.task.id}`, instanceType:"standard-3", wakeReason:`agent-attempt-${attempt}` });
-  let result;
   const runtimeSecrets = await resolveEnvironmentSecretValues(env, item.environment.secrets, "runtime");
+  const policy = await getTaskSecurityPolicy(env.CONTROL_DB, item.task.owner_sub, item.task.id);
+  if (!policy) throw new Error("Task has no pinned security policy");
+  assertStrictSandboxFilesystemPolicy(policy.policy,cwd);
+  const containerSessionId = await openContainerSession(env.CONTROL_DB, { ownerSub:item.task.owner_sub, projectId:item.project.id, taskId:item.task.id, sandboxId:`grok-${item.task.id}`, instanceType:"standard-3", wakeReason:`agent-attempt-${attempt}` });
+  let result:{success:boolean;exitCode:number;stdout:string;stderr:string;sessionId:string|null;finalText:string;structuredOutput?:unknown};
+  let permissions = nativePermissionConfig(policy.policy, item.task.permission_mode === "review-only");
+  const deniedTools = JSON.parse(item.task.denied_tools_json || "[]") as string[];
+  const allowedTools = JSON.parse(item.task.allowed_tools_json || "[]") as string[];
+  permissions = applyJobToolContract(permissions, allowedTools, deniedTools, item.task.web_search_mode);
+  let sensitiveModelConfig:string|null = null;
   try {
-    const mcp = await sandbox.exec("grok mcp add --transport http --scope user playwright http://127.0.0.1:8931/mcp", { cwd, env: { GROK_HOME: grokHome, NO_COLOR: "1" } });
+    const profile = item.task.model_profile_id ? await resolveModelProfile(env, item.task.owner_sub, item.project.id, item.task.model_profile_id) : null;
+    const runtimeModel = profile ? `managed-${profile.id.replace(/[^A-Za-z0-9_-]/g, "-")}` : item.task.model;
+    const prepared = await prepareTaskRuntime({ db:env.CONTROL_DB, sandbox, taskId:item.task.id, projectId:item.project.id, ownerSub:item.task.owner_sub, cwd, baseGrokHome:grokHome, model:item.task.model });
+    if (profile) {
+      sensitiveModelConfig = `${prepared.grokHome}/config.toml`;
+      await sandbox.writeFile(sensitiveModelConfig, modelConfig(profile, runtimeModel));
+      await sandbox.exec(`chmod 400 ${shell(sensitiveModelConfig)}`);
+      const inspected = await sandbox.exec("grok inspect --json", {cwd,timeout:60_000,env:{GROK_HOME:prepared.grokHome,NO_COLOR:"1"}});
+      if (!inspected.success) throw new Error(`Managed model profile is invalid: ${(inspected.stderr || inspected.stdout).slice(-1200)}`);
+    }
+    await appendEvent(env.CONTROL_DB, item.task.id, "runtime.prepared", { policyDigest:prepared.policyDigest, extensionDigests:prepared.extensionDigests, modelProfileId:item.task.model_profile_id });
+    const mcp = await sandbox.exec("grok mcp add --transport http --scope user playwright http://127.0.0.1:8931/mcp", { cwd, env: { GROK_HOME: prepared.grokHome, NO_COLOR: "1" } });
     if (!mcp.success) throw new Error(`Playwright MCP setup failed: ${mcp.stderr.slice(-800)}`);
     const connectors = (await env.CONTROL_DB.prepare("SELECT c.* FROM connectors c JOIN project_connectors pc ON pc.connector_id = c.id WHERE pc.project_id = ? AND c.enabled = 1 AND pc.read_allowed = 1").bind(item.project.id).all<Connector>()).results;
     for (const connector of connectors) {
       const proxyToken = await connectorProxyToken(env, connector.id, item.task.id);
       const name = connector.label.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || connector.id;
       const command = `grok mcp add --transport ${shell(connector.kind)} --scope user ${shell(name)} ${shell(`${env.MACHINE_ORIGIN}/mcp-proxy/${connector.id}`)} --header ${shell(`Authorization: Bearer ${proxyToken}`)}`;
-      const configured = await sandbox.exec(command, { cwd, env: { GROK_HOME: grokHome, NO_COLOR: "1" } });
+      const configured = await sandbox.exec(command, { cwd, env: { GROK_HOME: prepared.grokHome, NO_COLOR: "1" } });
       if (!configured.success) throw new Error(`MCP connector ${connector.label} failed to configure: ${configured.stderr.slice(-800)}`);
     }
     const promptPath = `/workspace/task-${attempt}.txt`;
     const repositoryContext = item.environment.repositories.map((repository) => `- ${repository.checkoutPath}: ${repository.writable ? "writable task target" : "read-only context"}${repository.pinnedSha ? ` at ${repository.pinnedSha}` : ""}`).join("\n");
     const repositoryRules = await repositoryRuleContext(sandbox, cwd);
-    const verificationPrompt = `${prompt}${repositoryRules ? `\n\nRepository rules discovered from the pinned checkout:\n${repositoryRules}` : ""}${await ciRepairInstructions(env, item.task.id)}\n\nPinned environment ${item.environment.environmentVersionId}:\n${repositoryContext}\n\nWrite only in ${cwd}. Treat sibling repositories as read-only context. Cloud verification: if this task changes a user-facing application, use the Playwright MCP server to exercise the changed flow in the headed browser. Save concise screenshots or video evidence in /workspace/playwright-evidence. Do not claim success until the relevant checks pass.`;
+    const contract = `${item.task.max_turns ? `\nMaximum agent turns: ${item.task.max_turns}.` : ""}${item.task.output_schema_json ? `\nReturn the final result in this required JSON Schema: ${item.task.output_schema_json}` : ""}${item.task.web_search_mode === "require" ? "\nUse web search and cite the sources used." : ""}`;
+    const verificationPrompt = `${prompt}${contract}${repositoryRules ? `\n\nRepository rules discovered from the pinned checkout:\n${repositoryRules}` : ""}${await ciRepairInstructions(env, item.task.id)}\n\nPinned environment ${item.environment.environmentVersionId}:\n${repositoryContext}\n\nWrite only in ${cwd}. Treat sibling repositories as read-only context. Cloud verification: if this task changes a user-facing application, use the Playwright MCP server to exercise the changed flow in the headed browser. Save concise screenshots or video evidence in /workspace/playwright-evidence. Do not claim success until the relevant checks pass.`;
     await sandbox.writeFile(promptPath, verificationPrompt);
-    const timeout = Number(env.TASK_TIMEOUT_MINUTES) * 60_000;
-    result = await sandbox.exec(grokCommand(promptPath, cwd, item.task, sessionId), { cwd, timeout, env: { GROK_HOME: grokHome, NO_COLOR: "1", ...runtimeSecrets } });
+    await emitTaskTelemetry(env, {name:"agent.attempt.started",attributes:{taskId:item.task.id,projectId:item.project.id,modelProfileId:item.task.model_profile_id || undefined,modelBackend:profile?.backend || "grok-subscription",permissionMode:item.task.permission_mode}});
+    const acp = await runAcpPrompt(sandbox, item.task.id, { cwd, grokHome:prepared.grokHome, model:runtimeModel, prompt:verificationPrompt, promptBlocks:await attachmentPromptBlocks(env,item.task,sandbox,verificationPrompt), permissionArgs:permissionCliArgs(permissions), sessionId, reviewOnly:item.task.permission_mode === "review-only", env:{...runtimeSecrets,...(profile?.credential && profile.backend !== "anthropic" ? {GROK_BUILD_MODEL_API_KEY:profile.credential} : {})}, maxTurns:item.task.max_turns, outputSchema:item.task.output_schema_json ? JSON.parse(item.task.output_schema_json) as Record<string,unknown> : null, runtimeIdentity:JSON.stringify({policyDigest:prepared.policyDigest,extensionDigests:prepared.extensionDigests,modelProfileDigest:profile ? await runtimeDigest(profile) : null}), deniedPaths:policy.policy.filesystem.deniedPaths });
+    const resultEvent={type:"agent_result",data:{stopReason:acp.stopReason,finalText:acp.finalText,structuredOutput:acp.structuredOutput,structuredOutputError:acp.structuredOutputError}};
+    const stdout = [...acp.events.map((event) => JSON.stringify(event)),JSON.stringify(resultEvent)].join("\n");
+    result = { success:acp.ok, exitCode:acp.ok ? 0 : 1, stdout, stderr:acp.stderr, sessionId:acp.sessionId, finalText:acp.finalText, structuredOutput:acp.structuredOutput };
+    await persistAcpConversation(env.CONTROL_DB,item.task.id,attempt,acp,secretValues(runtimeSecrets));
+    await emitTaskTelemetry(env, {name:"agent.attempt.finished",level:acp.ok?"INFO":"ERROR",attributes:{taskId:item.task.id,projectId:item.project.id,status:acp.ok?"completed":"failed",modelProfileId:item.task.model_profile_id || undefined,modelBackend:profile?.backend || "grok-subscription",durationMs:Date.now()-activeStarted}});
   } finally {
+    if (sensitiveModelConfig) await sandbox.exec(`rm -f ${shell(sensitiveModelConfig)}`).catch(() => undefined);
     await desktop.kill().catch(() => undefined);
     const activeMilliseconds = Date.now() - activeStarted;
     await closeContainerSession(env.CONTROL_DB, { sessionId:containerSessionId, activeMilliseconds, state:"sleeping" });
@@ -191,7 +265,16 @@ async function runAgent(env: ControlEnv, item: TaskContext, fork: {name:string;r
     source:"grok-streaming-json", idempotencyKey:`model:${item.task.id}:${attempt}`,
     metadata:{ inputTokens:usage.inputTokens, outputTokens:usage.outputTokens },
   });
-  return { ok: result.success, exitCode: result.exitCode, sessionId: sessionFrom(result.stdout, sessionId), stderr: redactSecurityText(result.stderr.slice(-4000), secretValues(runtimeSecrets)), evidenceKey };
+  return { ok: result.success, exitCode: result.exitCode, sessionId: result.sessionId ?? sessionId, stderr: redactSecurityText(result.stderr.slice(-4000), secretValues(runtimeSecrets)), evidenceKey, finalText:result.finalText, structuredOutput:result.structuredOutput };
+}
+
+async function checkpointLatestUserMessage(db:D1Database,taskId:string,headSha:string,sessionId:string|null,executionPrompt:string) {
+  if (!/^[a-f0-9]{40}$/i.test(headSha)) throw new Error("Task result has no valid conversation checkpoint SHA");
+  const message=await db.prepare("SELECT id FROM messages WHERE task_id=? AND role='user' ORDER BY created_at DESC,id DESC LIMIT 1").bind(taskId).first<{id:string}>();
+  if (!message) throw new Error("Task has no user message to checkpoint");
+  await db.prepare(`INSERT INTO task_message_checkpoints (message_id,task_id,head_sha,acp_session_id,execution_prompt,created_at) VALUES (?,?,?,?,?,?)
+    ON CONFLICT(message_id) DO UPDATE SET head_sha=excluded.head_sha,acp_session_id=excluded.acp_session_id,execution_prompt=excluded.execution_prompt,created_at=excluded.created_at`)
+    .bind(message.id,taskId,headSha,sessionId,executionPrompt,now()).run();
 }
 
 async function harvestBrowserEvidence(env: ControlEnv, item: TaskContext) {
@@ -240,7 +323,7 @@ async function verify(env: ControlEnv, item: TaskContext) {
   return { ok: successful, command, output: body.slice(-12_000), evidenceKey: key };
 }
 
-async function pushAndBackup(env: ControlEnv, item: TaskContext, fork: {name:string;remote:string;token:string}) {
+async function pushAndBackup(env: ControlEnv, item: TaskContext, fork: {name:string;remote:string;token:string;branch:string;sourceHeadSha?:string}) {
   const sandbox = sandboxFor(env, item.task.id);
   const cwd = taskDirectory(item);
   const changed = await sandbox.exec("test -n \"$(git status --porcelain)\"", { cwd });
@@ -266,7 +349,7 @@ async function pushAndBackup(env: ControlEnv, item: TaskContext, fork: {name:str
   const additions = changedFiles.reduce((total, file) => total + file.additions, 0);
   const deletions = changedFiles.reduce((total, file) => total + file.deletions, 0);
   if (changed.success) {
-    const pushed = await sandbox.exec(`git add -A && git commit -m ${shell(`Grok Build: ${item.task.title}`)} && git -c http.extraHeader=${shell(`Authorization: Bearer ${fork.token}`)} push origin HEAD:${shell(item.project.default_branch)}`, { cwd, timeout: 180_000 });
+    const pushed = await sandbox.exec(`git add -A && git commit -m ${shell(`Grok Build: ${item.task.title}`)} && git -c http.extraHeader=${shell(`Authorization: Bearer ${fork.token}`)} push origin HEAD:${shell(fork.branch)}`, { cwd, timeout: 180_000 });
     if (!pushed.success) throw new Error(`Task fork push failed: ${pushed.stderr.slice(-1200)}`);
   }
   const sha = await sandbox.exec("git rev-parse HEAD", { cwd });
@@ -282,7 +365,7 @@ async function pushAndBackup(env: ControlEnv, item: TaskContext, fork: {name:str
   return { baseSha: base.stdout.trim(), headSha: sha.stdout.trim(), changedFiles };
 }
 
-async function promoteFastForward(env: ControlEnv, item: TaskContext, taskRepo: string, expectedBaseSha: string, expectedHeadSha: string) {
+async function promoteFastForward(env: ControlEnv, item: TaskContext, taskRepo: string, taskBranch:string, expectedBaseSha: string, expectedHeadSha: string) {
   const [canonical, taskFork] = await Promise.all([env.ARTIFACTS.get(item.project.artifact_repo), env.ARTIFACTS.get(taskRepo)]);
   const [targetToken, sourceToken] = await Promise.all([canonical.createToken("write", 3600), taskFork.createToken("read", 3600)]);
   const sandbox = sandboxFor(env, `${item.task.id}-promotion`);
@@ -290,7 +373,7 @@ async function promoteFastForward(env: ControlEnv, item: TaskContext, taskRepo: 
   try {
     const clone = await sandbox.exec(`rm -rf ${shell(cwd)} && git -c http.extraHeader=${shell(`Authorization: Bearer ${targetToken.plaintext}`)} clone --branch ${shell(item.project.default_branch)} --single-branch ${shell(canonical.remote)} ${shell(cwd)}`, { timeout: 180_000 });
     if (!clone.success) throw new Error(`Canonical clone failed: ${clone.stderr.slice(-1200)}`);
-    const fetched = await sandbox.exec(`git -c http.extraHeader=${shell(`Authorization: Bearer ${sourceToken.plaintext}`)} fetch ${shell(taskFork.remote)} ${shell(item.project.default_branch)}:refs/remotes/task/result`, { cwd, timeout: 180_000 });
+    const fetched = await sandbox.exec(`git -c http.extraHeader=${shell(`Authorization: Bearer ${sourceToken.plaintext}`)} fetch ${shell(taskFork.remote)} ${shell(taskBranch)}:refs/remotes/task/result`, { cwd, timeout: 180_000 });
     if (!fetched.success) throw new Error(`Task result fetch failed: ${fetched.stderr.slice(-1200)}`);
     const refs = await sandbox.exec("printf '%s\\n%s' \"$(git rev-parse HEAD)\" \"$(git rev-parse refs/remotes/task/result)\"", { cwd });
     const [canonicalSha, taskSha] = refs.stdout.trim().split("\n");
@@ -326,12 +409,18 @@ export class TaskWorkflow extends WorkflowEntrypoint<ControlEnv, TaskWorkflowInp
         await broadcast(this.env, input.ownerSub, taskEvent);
       });
       const sourceArtifactRepo = await step.do("resolve task fork source", async () => {
+        if (input.sourceTaskId || input.sourceHeadSha) {
+          if (!input.sourceTaskId || !input.sourceHeadSha || !/^[a-f0-9]{40}$/i.test(input.sourceHeadSha)) throw new Error("Session tasks require an exact source task and head SHA");
+          const source = await workflowTask(this.env.CONTROL_DB,input.sourceTaskId,input.ownerSub);
+          if (!source?.task_repo) throw new Error("Session source task repository is unavailable");
+          return source.task_repo;
+        }
         if (!input.subagentId || !input.parentTaskId) return item.project.artifact_repo;
         const parent = await workflowTask(this.env.CONTROL_DB, input.parentTaskId, input.ownerSub);
         if (!parent?.task_repo || !parent.head_sha) throw new Error("Subagents require a parent task fork with an exact head SHA");
         return parent.task_repo;
       });
-      const fork = await step.do("fork task source repository", { retries: { limit: 3, delay: "5 seconds", backoff: "exponential" }, timeout: "5 minutes", sensitive: "output" }, () => taskFork(this.env, item, sourceArtifactRepo));
+      const fork = await step.do("fork task source repository", { retries: { limit: 3, delay: "5 seconds", backoff: "exponential" }, timeout: "5 minutes", sensitive: "output" }, () => taskFork(this.env, item, sourceArtifactRepo,input.sourceHeadSha));
       await step.do("mark running", async () => {
         await updateTask(this.env.CONTROL_DB, input.taskId, "running", { taskRepo: fork.name });
         await this.env.CONTROL_DB.prepare("UPDATE ci_repairs SET status='running', updated_at=? WHERE task_id=?").bind(now(), input.taskId).run();
@@ -408,6 +497,7 @@ export class TaskWorkflow extends WorkflowEntrypoint<ControlEnv, TaskWorkflowInp
       }
       const browserEvidence = await step.do("retain browser evidence", { timeout: "10 minutes" }, () => harvestBrowserEvidence(this.env, item));
       const revision = await step.do("push task fork and back up workspace", { timeout: "20 minutes" }, () => pushAndBackup(this.env, item, fork));
+      await step.do("checkpoint conversation and code", () => checkpointLatestUserMessage(this.env.CONTROL_DB,input.taskId,revision.headSha,run.sessionId,item.task.prompt));
       await step.do("complete review autofix record", () => this.env.CONTROL_DB.prepare("UPDATE review_fix_runs SET status='completed',result_head_sha=?,completed_at=?,updated_at=? WHERE task_id=? AND workflow_id=? AND status='running'").bind(revision.headSha, now(), now(), input.taskId, item.task.workflow_id).run().then(() => undefined));
       await step.do("mark ready for review", async () => {
         await updateTask(this.env.CONTROL_DB, input.taskId, "review", { sessionId: run.sessionId ?? undefined, baseSha: revision.baseSha, headSha: revision.headSha, error: null });
@@ -456,7 +546,7 @@ export class TaskWorkflow extends WorkflowEntrypoint<ControlEnv, TaskWorkflowInp
         if (!current || current.task_repo !== fork.name || current.head_sha !== approval.payload.expectedHeadSha || current.status !== "review") throw new Error("Promotion approval is stale for the reviewed task revision");
         promotionHeadSha = current.head_sha;
       }
-      const promotedSha = await step.do("promote with fast forward", { retries: { limit: 2, delay: "10 seconds", backoff: "exponential" }, timeout: "10 minutes" }, () => promoteFastForward(this.env, item, fork.name, revision.baseSha, promotionHeadSha));
+      const promotedSha = await step.do("promote with fast forward", { retries: { limit: 2, delay: "10 seconds", backoff: "exponential" }, timeout: "10 minutes" }, () => promoteFastForward(this.env, item, fork.name, fork.branch, revision.baseSha, promotionHeadSha));
       await step.do("mark completed", async () => {
         await updateTask(this.env.CONTROL_DB, input.taskId, "completed", { headSha: promotedSha, error: null });
         await this.env.CONTROL_DB.prepare("UPDATE ci_repairs SET status='completed', updated_at=? WHERE task_id=?").bind(now(), input.taskId).run();

@@ -32,6 +32,12 @@ Protocol (ACP).
 This repository contains the Rust source for the `grok` CLI/TUI and its agent
 runtime. It is synced periodically from the SpaceXAI monorepo.
 
+The root [`SOURCE_REV`](SOURCE_REV) records the full monorepo revision for the
+checked-in upstream source baseline. A scheduled, read-only drift check compares it
+with `xai-org/grok-build`; run `node scripts/check-upstream-source.mjs` locally.
+The check never overwrites source or advances the revision automatically, so an
+upstream diff must be reviewed before the baseline changes.
+
 </div>
 
 ---
@@ -63,11 +69,18 @@ auto-promote, installable PWA/background status, and single-use approvals for
 consequential writes. Standard-3 containers sleep after inactivity, so compute
 is active only while a task or shared desktop is being used.
 
-Exact MCP tool grants, encrypted environment-secret scoping, task forks, and
-review-bound promotion are enforced by the control plane. Filesystem-root,
-general tool, and outbound-host policies remain visible audited intent where
-Cloudflare Sandbox does not expose an immutable mount or network-policy hook;
-the workspace reports that limitation instead of claiming runtime enforcement.
+Exact MCP grants, encrypted environment-secret scoping, task forks, and
+review-bound promotion are enforced by the control plane. The native Grok
+permission engine also enforces task-pinned filesystem, tool, web, and managed
+runtime rules inside each container; Cloudflare Sandbox remains the outer
+process-isolation boundary.
+
+Cloud tasks run through a persistent ACP transport and can resume sessions,
+fork or rewind at retained prompts, export history, attach multimodal Agent API
+inputs, select encrypted managed-model profiles, request schema-bound outputs,
+and emit allowlisted OTLP logs and metrics. Approved extensions and LSP servers
+are digest-checked, materialized into a task-specific `GROK_HOME`, and verified
+with `grok inspect --json` before execution.
 
 ```sh
 cd web

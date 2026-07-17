@@ -8,10 +8,14 @@ import { companionArtifactToken, companionIdentity, pairCompanion, revokeCompani
 import { getAutomationTrigger, listDueCronTriggers, recordCronTriggerFired, verifyWebhookHmac } from "./cloud-automations";
 import { dispatchAutomation, drainAutomationQueue } from "./automation-runtime";
 import { agentApiRoute } from "./agent-api";
+import { cleanupExpiredAgentInputAttachments } from "./agent-jobs";
 import { processArtifactsEvent } from "./scm-events";
 import { publicTaskShareRoute } from "./knowledge-collaboration";
 import { retryAgentWebhookDeliveries } from "./agent-webhooks";
 import { retryAutomationDeliveries } from "./automation-delivery";
+import { runAcpPrompt } from "./acp-runtime";
+import { defaultSecurityPolicy } from "./security-policy";
+import { nativePermissionConfig, permissionCliArgs } from "./runtime-security";
 export { TaskHub } from "./task-hub";
 export { TaskWorkflow } from "./workflow";
 export { GitHubSyncWorkflow } from "./github";
@@ -119,17 +123,14 @@ async function runTask(request: Request, env: Env) {
   if (!await loadSubscription(env, sandbox)) return json({ error: "Cloud Grok subscription is signed out. Complete device authentication in Settings." }, 401);
   const cwd = await prepare(sandbox, input);
   const readOnly = input.permissionMode === "review-only";
-  const args = ["grok", "--single", '"$(cat /workspace/prompt.txt)"', "--cwd", shell(cwd), "--output-format", "streaming-json", "--model", shell(input.model || "grok-4.5"), "--sandbox", "workspace", "--permission-mode", readOnly ? "plan" : "bypassPermissions"];
-  if (readOnly) args.push("--deny", shell("Edit"), "--deny", shell("Write"), "--deny", shell("Bash(*)"));
-  else args.push("--deny", shell("Bash(git push*)"), "--deny", shell("Bash(gh *)"));
-  if (input.sessionId) args.push("--resume", shell(input.sessionId));
-  const result = await sandbox.exec(args.join(" "), { cwd, timeout: 900_000, env: { GROK_HOME: grokHome, NO_COLOR: "1" } });
+  const policy=defaultSecurityPolicy();
+  policy.filesystem.readRoots=[cwd]; policy.filesystem.writeRoots=[cwd];
+  const permissionArgs=permissionCliArgs(nativePermissionConfig(policy,readOnly));
+  const result = await runAcpPrompt(sandbox, id, { cwd, grokHome, model:input.model || "grok-4.5", prompt:input.prompt, permissionArgs, sessionId:input.sessionId, reviewOnly:readOnly, env:{}, deniedPaths:policy.filesystem.deniedPaths });
   await persistSubscription(env, sandbox);
   await sandbox.exec("git add -N .", { cwd });
   const diff = await sandbox.exec("git diff --binary --no-ext-diff HEAD", { cwd, timeout: 120_000 });
-  const events = result.stdout.split("\n").filter(Boolean).slice(-2000).map((line) => { try { return JSON.parse(line) as unknown; } catch { return { type: "text", data: line }; } });
-  const session = events.findLast((event) => typeof event === "object" && event !== null && "session_id" in event) as { session_id?: string } | undefined;
-  return json({ ok: result.success, exitCode: result.exitCode, stderr: result.stderr.slice(-20_000), events, patch: diff.stdout, sessionId: session?.session_id || input.sessionId || null }, result.success ? 200 : 422);
+  return json({ ok: result.ok, exitCode:result.ok ? 0 : 1, stderr: result.stderr.slice(-20_000), events:result.events.slice(-2000), patch: diff.stdout, sessionId:result.sessionId || input.sessionId || null }, result.ok ? 200 : 422);
 }
 
 async function startPreview(request: Request, env: Env) {
@@ -166,7 +167,7 @@ async function route(request: Request, env: ControlEnv) {
   if (url.pathname.startsWith("/shared/")) return publicTaskShareRoute(request, env);
   if (url.pathname.startsWith("/github-ci-proxy/")) return githubCiLogProxy(request, env);
   if (url.pathname === "/github/webhook" && request.method === "POST") return githubWebhook(request, env);
-  if (url.pathname === "/v1/agents" || url.pathname.startsWith("/v1/agents/") || url.pathname === "/v1/webhooks" || url.pathname.startsWith("/v1/webhooks/")) return agentApiRoute(request, env);
+  if (url.pathname === "/v1/agents" || url.pathname.startsWith("/v1/agents/") || url.pathname === "/v1/attachments" || url.pathname === "/v1/webhooks" || url.pathname.startsWith("/v1/webhooks/")) return agentApiRoute(request, env);
   if (url.pathname === "/v1/companion/pair" && request.method === "POST") return pairCompanion(request, env);
   if (url.pathname.startsWith("/v1/companion/") && url.pathname !== "/v1/companion/pair") {
     const bodyText = request.method === "GET" ? "" : await request.text();
@@ -215,7 +216,7 @@ async function runScheduledAutomations(env: ControlEnv, scheduledTime: number) {
     }
   }
   await drainAutomationQueue(env);
-  await Promise.all([retryAgentWebhookDeliveries(env), retryAutomationDeliveries(env)]);
+  await Promise.all([retryAgentWebhookDeliveries(env), retryAutomationDeliveries(env), cleanupExpiredAgentInputAttachments(env)]);
 }
 
 export default {

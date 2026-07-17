@@ -2,6 +2,7 @@ import { controlRoute } from "./api";
 import { agentApiProjectAllowed, authenticateAgentApiKey, idempotentResponse, requestDigest, requireAgentApiScope } from "./agent-api-auth";
 import type { ControlEnv, Identity } from "./types";
 import { createAgentWebhook, disableAgentWebhook, listAgentWebhooks } from "./agent-webhooks";
+import { listTaskInputAttachments, storeAgentInputAttachment } from "./agent-jobs";
 
 const jsonHeaders = { "content-type":"application/json; charset=utf-8", "cache-control":"no-store" };
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers:jsonHeaders }); }
@@ -25,6 +26,16 @@ export async function agentApiRoute(request: Request, env: ControlEnv) {
   const identity: Identity = { sub:apiIdentity.ownerSub, email:`api-key-${apiIdentity.keyId}@grok-build.invalid`, name:"Agent API" };
   const url = new URL(request.url);
   try {
+    if (url.pathname === "/v1/attachments" && request.method === "POST") {
+      requireAgentApiScope(apiIdentity, "agents:write");
+      const declared = Number(request.headers.get("content-length") || 0);
+      if (declared > 10_485_760) return json({ error:"Attachment exceeds 10 MB" }, 413);
+      const name = decodeURIComponent(request.headers.get("x-file-name") || "");
+      const contentType = request.headers.get("content-type")?.split(";", 1)[0] || "application/octet-stream";
+      const kind = request.headers.get("x-attachment-kind") || undefined;
+      try { return json(await storeAgentInputAttachment(env, apiIdentity.ownerSub, { body:await request.arrayBuffer(), name, contentType, kind }), 201); }
+      catch (error) { return json({ error:error instanceof Error ? error.message : "Attachment upload failed" }, 400); }
+    }
     if (url.pathname === "/v1/webhooks" && request.method === "GET") {
       requireAgentApiScope(apiIdentity, "webhooks:write");
       return json({ webhooks:await listAgentWebhooks(env.CONTROL_DB, apiIdentity.ownerSub) });
@@ -84,7 +95,10 @@ export async function agentApiRoute(request: Request, env: ControlEnv) {
       requireAgentApiScope(apiIdentity, "agents:read");
       const task = await taskProject(env, apiIdentity.ownerSub, detailMatch[1]);
       if (!task || !agentApiProjectAllowed(apiIdentity, task.project_id)) return json({ error:"Agent not found" }, 404);
-      return controlRoute(rewrittenRequest(request, `/api/tasks/${detailMatch[1]}`), env, identity);
+      const response = await controlRoute(rewrittenRequest(request, `/api/tasks/${detailMatch[1]}`), env, identity);
+      if (!response.ok) return response;
+      const body = await response.json<Record<string, unknown>>();
+      return json({ ...body, attachments:await listTaskInputAttachments(env.CONTROL_DB, apiIdentity.ownerSub, detailMatch[1]) }, response.status);
     }
     return json({ error:"Agent API route not found" }, 404);
   } catch (error) {

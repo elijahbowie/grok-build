@@ -4,6 +4,7 @@ import { createCustomizationRule } from "./rules-memory";
 import { requireOrganizationRole, requireProjectRole } from "./organizations";
 
 const encoder = new TextEncoder();
+const EXECUTABLE_MARKETPLACE_KINDS = new Set(["mcp", "plugin", "hook"]);
 function base64url(value: Uint8Array) { return btoa(String.fromCharCode(...value)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, ""); }
 async function digest(value: string) { return base64url(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(value)))); }
 
@@ -96,9 +97,13 @@ export async function createMarketplaceItem(db: D1Database, identity: Identity, 
 }
 
 export async function setMarketplaceTrust(db: D1Database, identity: Identity, itemId: string, status:"approved"|"rejected"|"revoked") {
-  const item = await db.prepare("SELECT owner_sub,organization_id FROM marketplace_items WHERE id=?").bind(itemId).first<{owner_sub:string;organization_id:string|null}>();
+  const item = await db.prepare("SELECT owner_sub,organization_id,kind FROM marketplace_items WHERE id=?").bind(itemId).first<{owner_sub:string;organization_id:string|null;kind:string}>();
   if (!item) throw new Error("Marketplace item not found");
-  if (item.owner_sub !== identity.sub) {
+  if (status === "approved" && EXECUTABLE_MARKETPLACE_KINDS.has(item.kind)) {
+    if (!item.organization_id) throw new Error("Executable marketplace items require independent organization-admin approval");
+    if (item.owner_sub === identity.sub) throw new Error("Executable marketplace items require an organization admin other than their creator");
+    await requireOrganizationRole(db, identity, item.organization_id, "admin");
+  } else if (item.owner_sub !== identity.sub) {
     if (!item.organization_id) throw new Error("Marketplace owner approval is required");
     await requireOrganizationRole(db, identity, item.organization_id, "admin");
   }

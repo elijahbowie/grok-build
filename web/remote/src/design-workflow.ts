@@ -3,11 +3,12 @@ import { appendEvent, now } from "./db";
 import { broadcast } from "./api";
 import { buildDesignEditPrompt, completeDesignEditRequest, completeDesignSession, failDesignEditRequest, getDesignEditContext, startDesignEditRequest } from "./design-mode";
 import { createReviewRun } from "./review";
-import { grokHome, loadSubscription, persistSubscription, sandboxFor, shell } from "./sandbox-runtime";
+import { loadSubscription, persistSubscription, sandboxFor, shell } from "./sandbox-runtime";
 import { resolveTaskEnvironment } from "./environments";
 import type { ControlEnv, Project, Task } from "./types";
-import { resolveEnvironmentSecretValues, secretValues } from "./environment-secrets";
+import { secretValues } from "./environment-secrets";
 import { redactSecurityText } from "./security-policy";
+import { runHardenedAgent } from "./hardened-agent";
 
 export type DesignWorkflowInput = { editRequestId:string; sessionId:string; taskId:string; ownerSub:string; expectedRevision:string };
 
@@ -47,15 +48,12 @@ export class DesignWorkflow extends WorkflowEntrypoint<ControlEnv, DesignWorkflo
           const head = await sandbox.exec("git rev-parse HEAD", { cwd });
           if (!head.success || head.stdout.trim() !== input.expectedRevision) throw new Error("Design repository head changed before editing");
           const prompt = buildDesignEditPrompt({ session: item.context.session, edit: item.context.edit, elements: item.context.elements, relationships: item.context.selection?.relationships, annotations: item.context.annotations });
-          const promptPath = `/workspace/design-${input.editRequestId}.txt`;
-          await sandbox.writeFile(promptPath, prompt);
-          const runtimeSecrets = await resolveEnvironmentSecretValues(this.env, item.environment.secrets, "runtime");
-          const command = ["grok", "--single", `\"$(cat ${shell(promptPath)})\"`, "--cwd", shell(cwd), "--output-format", "streaming-json", "--model", shell(item.task.model), "--sandbox", "workspace", "--permission-mode", "bypassPermissions", "--deny", shell("Bash(git push*)"), "--deny", shell("Bash(gh *)")].join(" ");
-          const run = await sandbox.exec(command, { cwd, timeout: Number(this.env.TASK_TIMEOUT_MINUTES) * 60_000, env: { GROK_HOME: grokHome, NO_COLOR: "1", ...runtimeSecrets } });
+          const {acp,runtimeSecrets,secrets}=await runHardenedAgent({env:this.env,sandbox,task:item.task,projectId:item.project.id,cwd,prompt,runtimeId:`design-${input.editRequestId}`,reviewOnly:false});
           await persistSubscription(this.env, sandbox);
           const logKey = `tasks/${input.taskId}/design/${input.editRequestId}.jsonl`;
-          await this.env.EVIDENCE_BUCKET.put(logKey, redactSecurityText(`${run.stdout}\n${run.stderr}`, secretValues(runtimeSecrets)), { httpMetadata: { contentType: "application/x-ndjson" } });
-          if (!run.success) throw new Error(`Design agent failed (${run.exitCode}): ${redactSecurityText(run.stderr.slice(-4000), secretValues(runtimeSecrets))}`);
+          const log=[...acp.events.map((event)=>JSON.stringify(event)),JSON.stringify({type:"agent_result",data:{stopReason:acp.stopReason,finalText:acp.finalText}}),acp.stderr ? JSON.stringify({type:"stderr",data:acp.stderr}) : ""].filter(Boolean).join("\n");
+          await this.env.EVIDENCE_BUCKET.put(logKey, redactSecurityText(log, secrets), { httpMetadata: { contentType: "application/x-ndjson" } });
+          if (!acp.ok) throw new Error(`Design agent failed (${acp.stopReason}): ${redactSecurityText(acp.stderr.slice(-4000), secrets)}`);
           const validationOutput: string[] = [];
           for (const validation of item.environment.manifest.validation.length ? item.environment.manifest.validation : ["git diff --check"]) {
             const checked = await sandbox.exec(validation, { cwd, timeout: 900_000, env: { CI: "1", NO_COLOR: "1", ...runtimeSecrets } });

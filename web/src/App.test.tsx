@@ -108,4 +108,39 @@ describe("Grok Build workspace", () => {
     expect(await screen.findByRole("img", { name: "Browser evidence: checkout.png" })).toHaveAttribute("src", "/api/tasks/task-1/evidence/ev-1");
     expect(screen.getByRole("link", { name: "Open artifact ↗" })).toHaveAttribute("href", "/api/tasks/task-1/evidence/ev-1");
   });
+
+  it("submits an inspectable structured cloud job contract", async () => {
+    const cloudTask = { ...task, projectId: "project-1", source: "cloud", executionTarget: "remote" };
+    const cloudBootstrap = {
+      ...bootstrap, mode: "cloud", identity: { email: "director@eicimpact.org" }, tasks: [cloudTask],
+      projects: [{ id: "project-1", name: "Grok Build", slug: "grok-build", artifact_repo: "grok-build", default_branch: "main", source_type: "empty", source_url: null, ready: true }],
+      github: { app: null, connections: [], sync: [] }, limits: { concurrentTasks: 5, taskTimeoutMinutes: 60, retentionDays: 30 },
+    };
+    vi.stubGlobal("WebSocket", class { onmessage = null; onerror = null; close() {} });
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/bootstrap") return response(cloudBootstrap);
+      if (path === "/api/tasks/task-1") return response(cloudTask);
+      if (path === "/api/tasks/task-1/diff") return response({ patch:"" });
+      if (path === "/api/context-preview?projectId=project-1") return response({ rules: [], memories: [], privacyMode: false });
+      if (path === "/api/model-profiles?projectId=project-1") return response({ profiles: [{ id:"mdl-1", projectId:"project-1", name:"Release review", backend:"grok-subscription", modelId:"grok-4.5", baseUrl:null, reasoningEffort:"high", contextWindow:null, allowed:true, hasCredential:false, updatedAt:task.updatedAt }] });
+      if (path === "/api/tasks" && init?.method === "POST") return response({ ...cloudTask, id:"task-2", status:"queued" });
+      return response({});
+    }));
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /New agent/i }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Agent instructions" }), { target: { value: "Return a release report" } });
+    fireEvent.change(await screen.findByRole("combobox", { name: "Model" }), { target: { value: "mdl-1" } });
+    fireEvent.click(screen.getByRole("button", { name: /Structured job controls/i }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Maximum turns" }), { target: { value: "12" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Web search" }), { target: { value: "require" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Allowed tools" }), { target: { value: "Read, Grep" } });
+    fireEvent.change(screen.getByRole("textbox", { name: /^JSON output schema/ }), { target: { value: '{"type":"object"}' } });
+    fireEvent.change(screen.getByRole("textbox", { name: /^Uploaded attachment IDs/ }), { target: { value: "att_123" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start agent" }));
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input) === "/api/tasks" && init?.method === "POST");
+      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ modelProfileId:"mdl-1", maxTurns:12, webSearch:"require", allowedTools:["Read","Grep"], outputSchema:{type:"object"}, attachmentIds:["att_123"] });
+    });
+  });
 });
