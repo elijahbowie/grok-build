@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Grok Build — Design Polish Audit</title>
+  <style>
+    :root { color-scheme: dark; --bg:#090b0b; --surface:#0e1010; --line:#2b3030; --text:#f2f3f1; --muted:#b2b7b3; --faint:#858b86; --accent:#a7c7ff; --success:#83c99a; --warning:#e0b96f; font: 15px/1.6 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--text); background: var(--bg); }
+    main { width: min(1180px, calc(100% - 32px)); margin: auto; padding: 64px 0 96px; }
+    header { max-width: 780px; margin-bottom: 48px; }
+    .eyebrow { color: var(--faint); text-transform: uppercase; letter-spacing: .1em; font-size: 12px; font-weight: 700; }
+    h1 { margin: 8px 0 12px; font-size: clamp(36px, 7vw, 68px); line-height: 1; letter-spacing: -.05em; }
+    h2 { margin: 48px 0 16px; font-size: 24px; }
+    p { color: var(--muted); }
+    .score { display: flex; align-items: baseline; gap: 10px; margin-top: 24px; }
+    .score strong { color: var(--success); font-size: 52px; line-height: 1; }
+    .score span { color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 12px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--faint); text-transform: uppercase; letter-spacing: .08em; font-size: 11px; }
+    td:last-child, th:last-child { text-align: right; }
+    .cycle { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .cycle article { border-top: 2px solid var(--line); padding-top: 14px; }
+    .cycle strong { display: block; font-size: 24px; }
+    .cycle article:last-child { border-color: var(--success); }
+    .shots { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    figure { margin: 0; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; overflow: hidden; }
+    img { width: 100%; display: block; }
+    figcaption { padding: 10px 12px; color: var(--muted); font-size: 12px; }
+    ol { padding-left: 22px; }
+    li { padding: 8px 0 8px 6px; border-bottom: 1px solid var(--line); }
+    .healthy { color: var(--success); font-weight: 700; }
+    .limit { border-left: 3px solid var(--warning); padding: 10px 14px; background: #2a2112; color: var(--muted); }
+    code { color: var(--accent); }
+    @media (max-width: 720px) { main { padding-top: 32px; } .cycle, .shots { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Modern Interface Practice · iterative audit</div>
+    <h1>Grok Build design polish</h1>
+    <p>The working coding-agent experience was captured, scored, revised, and re-evaluated across desktop, compact, narrow, management, creation, review, and offline surfaces.</p>
+    <div class="score"><strong>91.1</strong><span>/ 100 final independent score · threshold exceeded</span></div>
+  </header>
+
+  <section>
+    <h2>Iteration record</h2>
+    <div class="cycle">
+      <article><span class="eyebrow">Baseline</span><strong>71</strong><p>Solid product structure, but cramped transcript, tiny operational type, token-per-row reasoning, and weak target sizing.</p></article>
+      <article><span class="eyebrow">Revision 1</span><strong>82</strong><p>Independent scorers rejected the pass: publish remained enabled while the Git diff was empty, and historical states looked live.</p></article>
+      <article><span class="eyebrow">Revision 2</span><strong>91.1</strong><p>A fresh scorer passed the corrected state contract, focus-managed overlays, keyboard tabs, reflow, and evidence-first publishing.</p></article>
+    </div>
+  </section>
+
+  <section>
+    <h2>Final rubric</h2>
+    <table>
+      <thead><tr><th>Category</th><th>Evidence</th><th>Score</th></tr></thead>
+      <tbody>
+        <tr><td>Work-surface hierarchy &amp; density</td><td>Rebalanced 3-pane grid; compact reasoning; quiet navigation; durable review remains prominent.</td><td>16.6 / 18</td></tr>
+        <tr><td>Core coding-agent workflow</td><td>Create, run, evidence, diff, terminal, files, preview, review, and publish surfaces remain intact and predictable.</td><td>16.9 / 18</td></tr>
+        <tr><td>State honesty &amp; inspectability</td><td>No-diff publishing is disabled; captured historical states are named; offline copy identifies stale evidence risk.</td><td>14.6 / 16</td></tr>
+        <tr><td>Visual-system coherence</td><td>Semantic role tokens, 4px rhythm, consistent control/surface radii, and modality-only shadow layer.</td><td>12.6 / 14</td></tr>
+        <tr><td>Accessibility &amp; input quality</td><td>Visible focus, skip link, focus-managed overlays, keyboard tabs, coarse targets, forced colors, reduced motion.</td><td>12.5 / 14</td></tr>
+        <tr><td>Responsive/adaptive behavior</td><td>1440px, 768px, and 390px captures; sidebar and review become dismissible overlays; local scroll is preserved.</td><td>8.8 / 10</td></tr>
+        <tr><td>Trust, feedback &amp; recovery</td><td>Evidence-first publish gating, bounded autonomy, undo/retry/offline language, and retained evidence are explicit.</td><td>9.1 / 10</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Before and after</h2>
+    <div class="shots">
+      <figure><img src="before/01-main-workspace.png" alt="Original Grok Build desktop workspace"><figcaption>Before · cramped transcript and one-row-per-token reasoning.</figcaption></figure>
+      <figure><img src="after/11-state-honesty.png" alt="Polished Grok Build desktop workspace with publishing disabled because no diff is available"><figcaption>After · balanced panes, compact reasoning, captured-state labels, and evidence-first publish gating.</figcaption></figure>
+      <figure><img src="after/02-settings-pass1.png" alt="Polished settings surface"><figcaption>Settings · flatter runtime summary and consistent form contract.</figcaption></figure>
+      <figure><img src="after/04-new-agent-pass1.png" alt="Polished new agent surface"><figcaption>Creation · strong job-first hierarchy with bounded-autonomy proof.</figcaption></figure>
+      <figure><img src="after/07-narrow-navigation-pass1.png" alt="Narrow navigation drawer"><figcaption>Narrow navigation · task context preserved in a dismissible overlay.</figcaption></figure>
+      <figure><img src="after/08-narrow-review-pass1.png" alt="Narrow artifact review panel"><figcaption>Narrow review · durable work takes over the viewport without losing workflow.</figcaption></figure>
+    </div>
+  </section>
+
+  <section>
+    <h2>Surface-by-surface health</h2>
+    <ol>
+      <li><strong>Main workspace:</strong> <span class="healthy">Healthy</span> — clearer hierarchy, wider transcript, readable timeline, stable composer.</li>
+      <li><strong>Diff review:</strong> <span class="healthy">Healthy</span> — durable output is prominent; publish remains a separate explicit action.</li>
+      <li><strong>Preview:</strong> <span class="healthy">Healthy</span> — command input and start action use the shared control contract.</li>
+      <li><strong>Terminal:</strong> <span class="healthy">Healthy</span> — retained-evidence purpose stays visible with readable code typography.</li>
+      <li><strong>Files:</strong> <span class="healthy">Healthy</span> — changed-file selection remains distinct and locally scrollable.</li>
+      <li><strong>Settings:</strong> <span class="healthy">Healthy</span> — runtime status, trust language, and connectors now scan as one coherent system.</li>
+      <li><strong>Automations:</strong> <span class="healthy">Healthy</span> — definition and empty-state guidance remain explicit with calmer form density.</li>
+      <li><strong>New agent:</strong> <span class="healthy">Healthy</span> — primary job, scope, model, access, compute, and autonomy boundary are visible before launch.</li>
+      <li><strong>Compact/narrow/offline:</strong> <span class="healthy">Healthy</span> — reflow works at 390px; navigation/review overlays and stale-state recovery are explicit.</li>
+    </ol>
+  </section>
+
+  <p class="limit"><strong>Evidence limit:</strong> screenshots and DOM inspection support the visual, semantic, focus, and reflow findings. They do not prove full WCAG conformance or every screen-reader/browser combination. No such compliance claim is made.</p>
+  <p>Implementation: <code>web/dist/design-polish.css</code>, <code>web/dist/design-polish.js</code>, minimal accessibility hooks in <code>web/dist/index.html</code>, and aligned offline/PWA assets.</p>
+</main>
+</body>
+</html>

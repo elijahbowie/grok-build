@@ -1,0 +1,1154 @@
+/* Grok Build design-polish layer.
+ * Grounded in Modern Interface Practice: quiet chrome, loud work;
+ * semantic roles; 4px rhythm; modality-only elevation; visible state.
+ */
+
+:root {
+  color-scheme: dark;
+  --canvas: #090b0b;
+  --surface-default: #0e1010;
+  --surface-subtle: #121515;
+  --surface-raised-semantic: #171a1a;
+  --surface-hover-semantic: #1c2020;
+  --border-subtle: #2b3030;
+  --border-strong: #414747;
+  --fg-default: #f2f3f1;
+  --fg-muted: #b2b7b3;
+  --fg-faint: #858b86;
+  --accent: #a7c7ff;
+  --accent-soft: #17243a;
+  --success: #83c99a;
+  --success-soft: #14261a;
+  --warning: #e0b96f;
+  --warning-soft: #2a2112;
+  --danger: #e28d91;
+  --danger-soft: #2c1718;
+  --focus-ring: #c2d7ff;
+  --radius-control: 6px;
+  --radius-surface: 8px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --motion-fast: 120ms;
+  --motion-default: 200ms;
+  --ease-out: cubic-bezier(.2, .8, .2, 1);
+
+  /* Preserve the app's existing variable API while giving it semantic roles. */
+  --bg: var(--canvas);
+  --surface: var(--surface-default);
+  --surface-raised: var(--surface-subtle);
+  --surface-hover: var(--surface-hover-semantic);
+  --line: var(--border-subtle);
+  --line-strong: var(--border-strong);
+  --text: var(--fg-default);
+  --muted: var(--fg-muted);
+  --faint: var(--fg-faint);
+  --green: var(--success);
+  --green-bg: var(--success-soft);
+  --red: var(--danger);
+  --red-bg: var(--danger-soft);
+  --blue: var(--accent);
+  --focus: var(--focus-ring);
+  --orange: var(--warning);
+  --orange-bg: var(--warning-soft);
+  background: var(--canvas);
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+
+body {
+  color: var(--fg-default);
+  background: var(--canvas);
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+select,
+textarea {
+  accent-color: var(--accent);
+}
+
+button,
+[role="tab"],
+input,
+select,
+textarea {
+  transition: color var(--motion-fast) var(--ease-out), background-color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out), opacity var(--motion-fast) var(--ease-out), transform var(--motion-fast) var(--ease-out);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+button:focus-visible,
+textarea:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible,
+[role="tab"]:focus-visible {
+  outline: 2px solid var(--focus-ring) !important;
+  outline-offset: 2px;
+}
+
+.skip-link {
+  position: fixed;
+  z-index: 200;
+  inset-block-start: var(--space-2);
+  inset-inline-start: var(--space-2);
+  padding: 10px 14px;
+  color: var(--canvas);
+  background: var(--fg-default);
+  border-radius: var(--radius-control);
+  font-weight: 700;
+  transform: translateY(-160%);
+  transition: transform var(--motion-fast) var(--ease-out);
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+/* Work surface: preserve the three-pane mental model, give the transcript room. */
+.app-shell {
+  grid-template-columns: 264px minmax(410px, .95fr) minmax(480px, 1.05fr);
+}
+
+.sidebar {
+  background: var(--canvas);
+}
+
+.sidebar-head,
+.workspace-header,
+.inspector-head,
+.mobile-top {
+  min-height: 60px;
+  height: 60px;
+}
+
+.brand {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.brand-mark {
+  color: var(--canvas);
+  background: var(--fg-default);
+}
+
+.icon-button {
+  min-width: 36px;
+  min-height: 36px;
+}
+
+.new-agent {
+  min-height: 42px;
+  margin: var(--space-1) 10px var(--space-3);
+  padding-inline: var(--space-3);
+  font-size: 13px;
+}
+
+.primary-nav {
+  gap: 2px;
+  padding-bottom: var(--space-3);
+}
+
+.primary-nav button {
+  min-height: 40px;
+  font-size: 13px;
+}
+
+.primary-nav button.active {
+  box-shadow: inset 3px 0 0 var(--accent);
+  background: var(--surface-hover-semantic);
+}
+
+.section-label,
+.eyebrow {
+  color: var(--fg-faint);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.task-section {
+  padding-top: var(--space-4);
+}
+
+.task-search {
+  min-height: 36px;
+  color: var(--fg-muted);
+}
+
+.task-search input {
+  font-size: 13px;
+}
+
+.task-row {
+  min-height: 50px;
+  padding: 10px var(--space-2);
+}
+
+.task-row.selected {
+  box-shadow: inset 3px 0 0 var(--accent), inset 0 0 0 1px var(--border-subtle);
+  background: var(--surface-hover-semantic);
+}
+
+.task-title {
+  color: var(--fg-default);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.task-meta,
+.account small,
+.runtime-account small {
+  color: var(--fg-faint);
+  font-size: 10.5px;
+}
+
+.runtime-account {
+  min-height: 68px;
+}
+
+.connection-dot,
+.status-mark {
+  position: relative;
+}
+
+.connection-dot::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  opacity: .45;
+}
+
+/* Transcript: flatter hierarchy, readable type, and compact reasoning. */
+.transcript {
+  background: var(--surface-default);
+}
+
+.workspace-header {
+  padding-inline: var(--space-4);
+}
+
+.title-group > strong {
+  font-size: 14px;
+}
+
+.repo-button,
+.review-mobile,
+.header-action {
+  min-height: 36px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.transcript-scroll {
+  padding: var(--space-6) clamp(20px, 3vw, 40px) 156px;
+}
+
+.message {
+  margin-bottom: var(--space-5);
+}
+
+.message-label {
+  color: var(--fg-faint);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.user-message {
+  background: transparent;
+  border-color: var(--border-subtle);
+  border-radius: var(--radius-surface);
+  padding: var(--space-4);
+}
+
+.user-message p,
+.agent-output {
+  color: var(--fg-default);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.run-card,
+.result-summary,
+.job-provenance,
+.session-lifecycle,
+.plan-workspace,
+.task-security,
+.agent-team {
+  border-color: var(--border-subtle);
+  background: transparent;
+  box-shadow: none;
+}
+
+.timeline-title strong,
+.result-summary h2 {
+  font-size: 16px;
+}
+
+.live-activity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 5px;
+  max-height: 248px;
+  padding: 2px var(--space-2) 2px 0;
+}
+
+.activity-event {
+  flex: 0 0 100%;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  padding: 9px 2px;
+}
+
+.activity-event strong {
+  color: var(--fg-muted);
+  font-size: 10.5px;
+}
+
+.activity-event p {
+  color: var(--fg-muted);
+  font: 11px/1.55 ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+.activity-event time {
+  color: var(--fg-faint);
+  font-size: 10px;
+}
+
+.activity-event.thought {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 0;
+  border: 0;
+  padding: 2px 0;
+}
+
+.activity-event.thought > span,
+.activity-event.thought strong,
+.activity-event.thought time {
+  display: none;
+}
+
+.activity-event.thought > div {
+  display: inline;
+}
+
+.activity-event.thought p {
+  display: inline;
+  margin: 0;
+  color: var(--fg-muted);
+  font: 12px/1.65 ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+.activity-event.thought p::after {
+  content: " ";
+}
+
+.live-activity > .thought:first-child::before,
+.live-activity > :not(.thought) + .thought::before {
+  content: "Reasoning";
+  flex-basis: 100%;
+  margin-inline-end: var(--space-2);
+  color: var(--warning);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.live-activity > :not(.thought) + .thought {
+  flex-basis: auto;
+  margin-top: var(--space-2);
+}
+
+.permission-strip,
+.checks {
+  gap: var(--space-2);
+}
+
+.composer {
+  background: var(--surface-raised-semantic);
+  border-color: var(--border-strong);
+  border-radius: var(--radius-surface);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, .28);
+}
+
+.composer:focus-within {
+  border-color: var(--focus-ring);
+}
+
+.followup {
+  bottom: var(--space-4);
+  padding: var(--space-3);
+}
+
+.followup textarea {
+  min-height: 40px;
+  padding: var(--space-1) var(--space-2);
+  font-size: 13px;
+}
+
+.tool-chip,
+.model-chip,
+.composer-options select {
+  min-height: 32px;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.send-button {
+  width: 34px;
+  height: 34px;
+  color: var(--canvas);
+  background: var(--fg-default);
+}
+
+/* Artifact review: the durable output is the visual focus. */
+.inspector {
+  background: var(--canvas);
+}
+
+.inspector-tabs button {
+  min-width: 70px;
+  padding-inline: var(--space-3);
+  color: var(--fg-faint);
+  font-size: 12px;
+}
+
+.inspector-tabs button[aria-selected="true"] {
+  color: var(--fg-default);
+  font-weight: 650;
+}
+
+.inspector-tabs button[aria-selected="true"]::after {
+  background: var(--accent);
+}
+
+.review-summary {
+  min-height: 76px;
+  padding: var(--space-3) var(--space-4);
+}
+
+.review-summary strong {
+  font-size: 13px;
+}
+
+.review-summary span,
+.review-tabs button,
+.diff-file-head,
+.preview-command,
+.preview-toolbar button {
+  font-size: 11.5px;
+}
+
+.primary-button,
+.secondary-button {
+  min-height: 36px;
+  padding: 8px 12px;
+  border-radius: var(--radius-control);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.primary-button {
+  color: var(--canvas);
+  background: var(--fg-default);
+}
+
+.review-tabs {
+  min-height: 46px;
+  height: 46px;
+}
+
+.review-tabs button {
+  min-height: 38px;
+}
+
+.review-tabs button.active {
+  box-shadow: inset 0 -2px 0 var(--accent);
+  background: transparent;
+}
+
+.panel-body {
+  padding: var(--space-4);
+}
+
+.diff-view,
+.file-preview,
+.terminal-pane {
+  border-color: var(--border-subtle);
+  background: var(--surface-default);
+  border-radius: var(--radius-surface);
+}
+
+.code-block {
+  font: 12px/1.65 ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+.management-empty,
+.empty-state {
+  color: var(--fg-muted);
+  border-color: var(--border-strong);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+/* Creation, settings, and automation surfaces share one form contract. */
+.empty-inner {
+  width: min(760px, 100% - 48px);
+}
+
+.empty-workspace h1 {
+  font-size: clamp(28px, 4vw, 42px);
+  letter-spacing: -.035em;
+}
+
+.empty-workspace h1 + p {
+  color: var(--fg-muted);
+  font-size: 14px;
+}
+
+.composer.large {
+  padding: var(--space-4);
+}
+
+.composer.large textarea {
+  min-height: 112px;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.composer-options label,
+.scope-note,
+.runtime-advisory,
+.starter-actions button {
+  color: var(--fg-muted);
+  font-size: 11.5px;
+}
+
+.starter-actions button {
+  min-height: 36px;
+}
+
+.management-inner {
+  width: min(980px, 100% - 48px);
+  padding-block: 48px 96px;
+}
+
+.management-inner > header {
+  margin-bottom: var(--space-6);
+}
+
+.management-inner h1 {
+  margin: var(--space-2) 0;
+  font-size: 34px;
+  letter-spacing: -.035em;
+}
+
+.management-inner > header p {
+  max-width: 680px;
+  color: var(--fg-muted);
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+
+.settings-section {
+  margin-bottom: var(--space-6);
+}
+
+.settings-section h2 {
+  margin-bottom: var(--space-3);
+  font-size: 16px;
+}
+
+.settings-grid {
+  gap: var(--space-3);
+}
+
+.settings-grid > div {
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0;
+  padding: var(--space-4) 0;
+}
+
+.settings-grid span {
+  color: var(--fg-faint);
+  font-size: 10.5px;
+}
+
+.settings-grid strong {
+  font-size: 14px;
+}
+
+.settings-grid small,
+.settings-help,
+.automation-form label,
+.automation-list p,
+.managed-list p {
+  color: var(--fg-muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.cloud-auth-surface p,
+.cloud-auth-surface small,
+.connector-form label,
+.plugin-form label,
+.managed-list small {
+  color: var(--fg-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.automation-form,
+.connector-form,
+.plugin-form,
+.cloud-auth-surface {
+  border-color: var(--border-subtle);
+  background: transparent;
+  border-radius: var(--radius-surface);
+}
+
+.automation-form input,
+.automation-form textarea,
+.automation-form select,
+.connector-form input,
+.connector-form select,
+.plugin-form input,
+.project-switcher select,
+.preview-command input {
+  min-height: 42px;
+  color: var(--fg-default);
+  background: var(--surface-default);
+  border-color: var(--border-strong);
+  border-radius: var(--radius-control);
+  font-size: 13px;
+}
+
+.automation-form textarea {
+  min-height: 96px;
+}
+
+.managed-list article,
+.automation-list article,
+.extension-summary > div {
+  border-color: var(--border-subtle);
+  border-radius: var(--radius-surface);
+}
+
+.trust-check {
+  min-height: 40px;
+}
+
+.trust-check input,
+input[type="checkbox"] {
+  min-width: 18px;
+  min-height: 18px;
+}
+
+/* Overlays use elevation because they are temporary modality. */
+.sidebar.open,
+.inspector.open,
+.dialog,
+.modal {
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .5);
+}
+
+.scrim {
+  background: rgba(0, 0, 0, .68);
+}
+
+.undo-toast,
+.app-notice {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-surface);
+}
+
+/* Responsive and inclusive interaction. */
+@media (width <= 1180px) {
+  .app-shell {
+    grid-template-columns: 240px minmax(380px, .95fr) minmax(430px, 1.05fr);
+  }
+}
+
+@media (width <= 900px) {
+  .app-shell,
+  .single-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sidebar {
+    width: min(330px, 88vw);
+  }
+
+  .inspector {
+    width: min(720px, 100%);
+    left: auto;
+  }
+
+  .review-mobile {
+    min-height: 38px;
+  }
+}
+
+@media (width <= 560px) {
+  .workspace-header,
+  .mobile-top {
+    min-height: 56px;
+    height: 56px;
+  }
+
+  .transcript-scroll {
+    padding: var(--space-4) var(--space-3) 144px;
+  }
+
+  .followup {
+    inset-inline: var(--space-2);
+    bottom: var(--space-2);
+  }
+
+  .management-inner {
+    width: calc(100% - 24px);
+    padding-top: var(--space-5);
+  }
+
+  .management-inner h1 {
+    font-size: 28px;
+  }
+
+  .empty-inner {
+    width: calc(100% - 24px);
+  }
+
+  .live-activity {
+    max-height: 220px;
+  }
+
+  .icon-button,
+  .send-button,
+  .review-mobile,
+  .inspector-tabs button,
+  .sidebar-head > button,
+  .secondary-button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .inspector-tabs {
+    gap: 0;
+    flex: 1;
+  }
+
+  .inspector-tabs button {
+    flex: 1;
+    padding-inline: var(--space-2);
+  }
+
+  .activity-event p {
+    overflow-wrap: anywhere;
+  }
+}
+
+@media (pointer: coarse) {
+  button,
+  [role="tab"],
+  select,
+  input:not([type="checkbox"]):not([type="radio"]) {
+    min-height: 44px;
+  }
+
+  .icon-button,
+  .send-button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+@media (forced-colors: active) {
+  :root {
+    --focus-ring: Highlight;
+  }
+
+  button,
+  input,
+  select,
+  textarea,
+  .task-row.selected,
+  .run-card,
+  .diff-view,
+  .composer,
+  .settings-grid > div {
+    border: 1px solid CanvasText;
+    forced-color-adjust: auto;
+  }
+
+  .connection-dot,
+  .status-mark,
+  .runtime-dot {
+    outline: 1px solid CanvasText;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  button:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* Scoped annotation refinement: Cursor-like, keyboard-first New Agent composer. */
+.empty-workspace {
+  background: var(--canvas);
+}
+
+.empty-workspace .empty-inner {
+  width: min(760px, calc(100% - 40px));
+  height: 100%;
+  margin: 0 auto;
+  padding: 0 0 clamp(24px, 6vh, 52px);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.empty-workspace .empty-brand,
+.empty-workspace h1,
+.empty-workspace h1 + p {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.empty-workspace .composer.large {
+  overflow: visible;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--surface-default);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .025);
+  grid-template-columns: minmax(0, 1fr) auto;
+  display: grid;
+}
+
+.empty-workspace .composer.large:focus-within {
+  border-color: color-mix(in srgb, var(--fg-muted) 72%, var(--border-strong));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--fg-muted) 18%, transparent);
+}
+
+.empty-workspace .composer.large textarea {
+  height: 78px;
+  max-height: 78px;
+  min-height: 78px;
+  padding: 14px 16px 8px;
+  color: var(--fg-default);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 14px;
+  line-height: 1.55;
+  resize: none;
+  grid-column: 1 / -1;
+}
+
+.empty-workspace .composer.large textarea::placeholder {
+  color: var(--fg-faint);
+  opacity: 1;
+}
+
+.empty-workspace .composer-options {
+  min-width: 0;
+  margin: 0;
+  padding: 5px 6px 5px 9px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 2px;
+  overflow: visible;
+}
+
+.empty-workspace .native-select-source {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.compact-select {
+  position: relative;
+  flex: none;
+}
+
+.compact-option {
+  min-height: 28px;
+  padding: 4px 7px;
+  color: var(--fg-muted);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.compact-option:hover,
+.compact-option[aria-expanded="true"] {
+  color: var(--fg-default);
+  background: var(--surface-hover);
+}
+
+.compact-option:disabled {
+  color: var(--fg-faint);
+  background: transparent;
+  cursor: not-allowed;
+}
+
+.compact-menu {
+  position: absolute;
+  z-index: 80;
+  left: 0;
+  bottom: calc(100% + 6px);
+  min-width: 184px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-raised-semantic);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .45);
+}
+
+.compact-menu[hidden] {
+  display: none;
+}
+
+.compact-menu-option {
+  width: 100%;
+  min-height: 32px;
+  padding: 7px 9px;
+  color: var(--fg-muted);
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  text-align: left;
+  font-size: 12px;
+}
+
+.compact-menu-option:hover,
+.compact-menu-option:focus-visible,
+.compact-menu-option[aria-selected="true"] {
+  color: var(--fg-default);
+  background: var(--surface-hover);
+}
+
+.cursor-context-bar {
+  width: 100%;
+  min-height: 28px;
+  margin-bottom: 6px;
+  padding-inline: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cursor-context-identifiers,
+.cursor-context-runtime {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.cursor-context-identifiers {
+  overflow: hidden;
+}
+
+.cursor-context-bar .tool-chip,
+.cursor-context-bar .compact-option {
+  min-height: 26px;
+  padding: 3px 6px;
+  color: var(--fg-faint);
+  font-size: 11px;
+}
+
+.cursor-context-bar .tool-chip:first-child {
+  max-width: 300px;
+}
+
+.cursor-context-runtime .compact-select:last-child .compact-menu {
+  right: 0;
+  left: auto;
+}
+
+.empty-workspace .composer-tools {
+  min-height: 38px;
+  margin: 0;
+  padding: 4px 7px 5px 4px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.empty-workspace .composer-tools > div {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  flex-wrap: nowrap;
+}
+
+.empty-workspace .composer-tools > .native-tool-context {
+  display: none;
+}
+
+.empty-workspace .tool-chip {
+  min-width: 0;
+  padding: 3px 8px 3px 0;
+  color: var(--fg-faint);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.empty-workspace .tool-chip:first-child {
+  max-width: min(330px, 65%);
+}
+
+.empty-workspace .send-button {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--canvas);
+  background: var(--fg-default);
+  display: grid;
+  place-items: center;
+}
+
+.empty-workspace .send-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fg-default) 88%, white);
+}
+
+.empty-workspace .send-button:disabled {
+  color: var(--fg-faint);
+  background: var(--surface-hover);
+  opacity: 1;
+}
+
+.empty-workspace .send-button .send-label {
+  display: none;
+}
+
+.empty-workspace .scope-note {
+  max-width: 100%;
+  margin-top: 10px;
+  padding: 0 4px;
+  color: var(--fg-faint);
+  border: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.empty-workspace .scope-note strong {
+  color: var(--fg-muted);
+  font-weight: 550;
+}
+
+@media (width <= 820px) {
+  .empty-workspace .composer.large {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .empty-workspace .composer-options {
+    display: flex;
+  }
+
+  .empty-workspace .composer-tools {
+    padding-left: 10px;
+  }
+}
+
+@media (width <= 560px) {
+  .empty-workspace .empty-inner {
+    width: calc(100% - 20px);
+    padding-bottom: 12px;
+  }
+
+  .empty-workspace .composer.large textarea {
+    height: 76px;
+    max-height: 76px;
+    min-height: 76px;
+    padding-inline: 13px;
+  }
+
+  .empty-workspace .composer.large {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .empty-workspace .composer-options {
+    padding-inline: 7px;
+    display: flex;
+  }
+
+  .empty-workspace .composer-tools {
+    padding-left: 10px;
+  }
+
+  .empty-workspace .send-button {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    min-height: 40px;
+  }
+
+  .empty-workspace .scope-note {
+    margin-top: 8px;
+    font-size: 11px;
+  }
+
+  .cursor-context-bar {
+    overflow-x: auto;
+    justify-content: flex-start;
+    scrollbar-width: none;
+  }
+
+  .cursor-context-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .cursor-context-identifiers,
+  .cursor-context-runtime {
+    flex: none;
+  }
+}
