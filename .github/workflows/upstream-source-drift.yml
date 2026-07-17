@@ -1,0 +1,26 @@
+name: Upstream source drift
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 13 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  imported-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out current xai-org/grok-build source
+        uses: actions/checkout@v4
+        with:
+          repository: xai-org/grok-build
+          path: .upstream-grok-build
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Compare imported source revision and tree
+        run: node scripts/check-upstream-source.mjs --upstream-dir .upstream-grok-build

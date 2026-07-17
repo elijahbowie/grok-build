@@ -1,4 +1,9 @@
 /target
+/web/node_modules
+/web/dist
+/web/*.tsbuildinfo
+/web/remote/.wrangler/
+/.grok-web
 **/*.rs.bk
 .DS_Store
 .grok-web/

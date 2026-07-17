@@ -18,6 +18,7 @@ Protocol (ACP).
 
 [Installing the released binary](#installing-the-released-binary) ·
 [Building from source](#building-from-source) ·
+[Web workspace](#web-workspace) ·
 [Documentation](#documentation) ·
 [Repository layout](#repository-layout) ·
 [Development](#development) ·
@@ -30,6 +31,12 @@ Protocol (ACP).
 
 This repository contains the Rust source for the `grok` CLI/TUI and its agent
 runtime. It is synced periodically from the SpaceXAI monorepo.
+
+The root [`SOURCE_REV`](SOURCE_REV) records the full monorepo revision for the
+checked-in upstream source baseline. A scheduled, read-only drift check compares it
+with `xai-org/grok-build`; run `node scripts/check-upstream-source.mjs` locally.
+The check never overwrites source or advances the revision automatically, so an
+upstream diff must be reviewed before the baseline changes.
 
 </div>
 
@@ -47,6 +54,39 @@ grok --version
 
 See the [changelog](https://x.ai/build/changelog) for the latest fixes,
 features, and improvements in each release.
+
+## Web workspace
+
+This fork includes a browser-based Grok Build workspace in [`web/`](web/). It
+provides agent task history, an inspectable run transcript, permission scope,
+diff review, responsive preview, terminal evidence, and file navigation.
+
+The Cloudflare-hosted workspace adds versioned multi-repository environments,
+isolated task and subagent forks, read-only Plan Mode with exact-revision
+approval, independent commit review, scoped MCP grants, transparent rules and
+memory, revision-bound design annotations, cloud automations that never
+auto-promote, installable PWA/background status, and single-use approvals for
+consequential writes. Standard-3 containers sleep after inactivity, so compute
+is active only while a task or shared desktop is being used.
+
+Exact MCP grants, encrypted environment-secret scoping, task forks, and
+review-bound promotion are enforced by the control plane. The native Grok
+permission engine also enforces task-pinned filesystem, tool, web, and managed
+runtime rules inside each container; Cloudflare Sandbox remains the outer
+process-isolation boundary.
+
+Cloud tasks run through a persistent ACP transport and can resume sessions,
+fork or rewind at retained prompts, export history, attach multimodal Agent API
+inputs, select encrypted managed-model profiles, request schema-bound outputs,
+and emit allowlisted OTLP logs and metrics. Approved extensions and LSP servers
+are digest-checked, materialized into a task-specific `GROK_HOME`, and verified
+with `grok inspect --json` before execution.
+
+```sh
+cd web
+npm install
+npm run dev
+```
 
 ## Building from source
 
