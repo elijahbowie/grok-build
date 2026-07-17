@@ -93,8 +93,10 @@ async function handleApi(req, res, url) {
   }
 
   if (method === "POST" && parts[0] === "auth" && parts[1] === "login") {
-    const supplied = String((await readBody(req)).token || "");
-    if (!authToken || !safeEqual(supplied, authToken)) {
+    const input = await readBody(req); const supplied = String(input.token || input.password || "");
+    const expectedEmail = String(process.env.GROK_WEB_AUTH_EMAIL || "").trim().toLowerCase();
+    const suppliedEmail = String(input.email || "").trim().toLowerCase();
+    if (!authToken || (expectedEmail && suppliedEmail !== expectedEmail) || !safeEqual(supplied, authToken)) {
       sendJson(res, 401, { error: "Invalid access token" });
       return;
     }

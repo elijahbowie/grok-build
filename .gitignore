@@ -6,3 +6,8 @@
 /.grok-web
 **/*.rs.bk
 .DS_Store
+.grok-web/
+web/node_modules/
+web/remote/.dev.vars
+web/remote/.wrangler/
+web/tsconfig.tsbuildinfo

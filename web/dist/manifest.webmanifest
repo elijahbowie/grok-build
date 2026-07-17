@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "Grok Build",
+  "short_name": "Grok Build",
+  "description": "Review and steer active Grok Build coding tasks.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f6f5f2",
+  "theme_color": "#161616",
+  "orientation": "any",
+  "icons": [
+    { "src": "/grok-build-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/grok-build-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Open active tasks", "short_name": "Tasks", "url": "/?view=tasks", "icons": [{ "src": "/grok-build-icon.svg", "sizes": "any", "type": "image/svg+xml" }] }
+  ]
+}

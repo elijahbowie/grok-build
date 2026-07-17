@@ -150,6 +150,7 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .inline-error { max-width: 760px; display: flex; align-items: flex-start; gap: 8px; margin: 12px auto; padding: 10px 12px; border: 1px solid #4a292b; border-radius: 6px; background: #1b1112; color: #d7a0a3; font-size: 10px; line-height: 1.45; }
 .inline-error span { display: grid; gap: 2px; }.inline-error strong { color: #edc2c4; }
+.inline-error button { margin-left: auto; padding: 4px 7px; border: 1px solid #67383b; border-radius: 5px; background: transparent; color: #edc2c4; font-size: 10px; }
 .run-controls { display: flex; gap: 5px; }.secondary-button.danger { color: #cb8589; }
 .runtime-dot.queued, .runtime-dot.interrupted { background: #c6a46b; box-shadow: 0 0 0 3px #211b12; }.runtime-dot.review, .runtime-dot.published { background: #a98ed3; box-shadow: 0 0 0 3px #1d1825; }.runtime-dot.failed, .runtime-dot.cancelled { background: var(--red); box-shadow: 0 0 0 3px var(--red-bg); }
 .live-activity { max-height: 290px; overflow: auto; margin: 12px 0 4px; padding-right: 3px; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
@@ -280,6 +281,7 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 
 @media (max-width: 1180px) {
   .app-shell { grid-template-columns: 240px minmax(330px, .85fr) minmax(430px, 1.15fr); }
+  .single-workspace { grid-template-columns: 240px minmax(0, 1fr); }
   .task-meta { font-size: 9px; }
   .result-grid { grid-template-columns: 1fr; }
 }

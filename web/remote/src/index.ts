@@ -1,5 +1,5 @@
 import { ContainerProxy, getSandbox, Sandbox } from "@cloudflare/sandbox";
-import { accessConfigured, accessIdentity } from "./auth";
+import { applicationAuthConfigured, applicationIdentity, browserOriginAllowed, clearSession, createSession, passwordIdentity } from "./auth";
 import { controlRoute, desktopRoute } from "./api";
 import type { ControlEnv, Identity } from "./types";
 import { connectorProxyRoute } from "./connectors";
@@ -145,6 +145,27 @@ async function startPreview(request: Request, env: Env) {
 async function route(request: Request, env: ControlEnv) {
   const url = new URL(request.url);
   if (url.pathname === "/healthz") return json({ ok: true });
+  if (url.pathname === "/api/auth/status" && request.method === "GET") {
+    const identity = await applicationIdentity(request, env);
+    return json({ configured:applicationAuthConfigured(env), authenticated:Boolean(identity), identity });
+  }
+  if (url.pathname === "/api/auth/login" && request.method === "POST") {
+    if (!applicationAuthConfigured(env)) return json({ error:"Application authentication is not configured" }, 503);
+    if (!browserOriginAllowed(request, env)) return json({ error:"Same-origin request required" }, 403);
+    const input = await body<{email?:string;password?:string}>(request);
+    const email = String(input.email || "").trim().toLowerCase(); const password = String(input.password || "");
+    if (email.length > 320 || password.length > 1024) return json({ error:"Invalid email or password" }, 401);
+    const ip = request.headers.get("cf-connecting-ip") || "unknown";
+    const rate = await env.AUTH_RATE_LIMITER.limit({ key:`${ip}:${email}` });
+    if (!rate.success) return json({ error:"Too many sign-in attempts. Try again in a minute." }, 429);
+    const identity = await passwordIdentity(email, password, env);
+    if (!identity) return json({ error:"Invalid email or password" }, 401);
+    const response = json({ authenticated:true, identity }); response.headers.set("set-cookie", await createSession(identity, env)); return response;
+  }
+  if (url.pathname === "/api/auth/logout" && request.method === "POST") {
+    if (!browserOriginAllowed(request, env)) return json({ error:"Same-origin request required" }, 403);
+    const response = json({ authenticated:false }); response.headers.set("set-cookie", clearSession()); return response;
+  }
   const automationWebhook = url.pathname.match(/^\/automation\/webhooks\/([^/]+)$/);
   if (automationWebhook && request.method === "POST") {
     const row = await env.CONTROL_DB.prepare("SELECT t.secret_ref, a.owner_sub FROM cloud_automation_triggers t JOIN cloud_automations a ON a.id=t.automation_id WHERE t.id=? AND t.type='webhook' AND t.enabled=1 AND a.status='enabled'").bind(automationWebhook[1]).first<{secret_ref:string;owner_sub:string}>();
@@ -178,10 +199,11 @@ async function route(request: Request, env: ControlEnv) {
     return json({ error: "Companion route not found" }, 404);
   }
   if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/desktop/")) {
-    let identity = await accessIdentity(request, env);
+    let identity = await applicationIdentity(request, env);
     const localServiceAccess = ["localhost", "127.0.0.1"].includes(url.hostname) && await authorized(request, env.RUNNER_TOKEN);
-    if (!identity && localServiceAccess) identity = { sub: "local-development", email: env.ACCESS_EMAIL } satisfies Identity;
-    if (!identity) return json({ error: accessConfigured(env) ? "Cloudflare Access authentication required" : "Cloudflare Access is not configured" }, accessConfigured(env) ? 401 : 503);
+    if (!identity && localServiceAccess) identity = { sub: "local-development", email: env.AUTH_EMAIL } satisfies Identity;
+    if (!identity) return json({ error: applicationAuthConfigured(env) ? "Authentication required" : "Application authentication is not configured" }, applicationAuthConfigured(env) ? 401 : 503);
+    if (!["GET","HEAD","OPTIONS"].includes(request.method) && !localServiceAccess && !browserOriginAllowed(request, env)) return json({ error:"Same-origin request required" }, 403);
     return url.pathname.startsWith("/desktop/") ? desktopRoute(request, env, identity) : controlRoute(request, env, identity);
   }
   if (!url.pathname.startsWith("/v1/")) {

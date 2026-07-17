@@ -71,11 +71,11 @@ export type TaskWorkflowInput = {
 };
 
 export type ControlEnv = Env & {
-  ACCESS_AUD?: string;
-  ACCESS_TEAM_DOMAIN?: string;
-  ACCESS_EMAIL?: string;
-  ACCESS_ALLOWED_EMAILS?: string;
-  ACCESS_ALLOWED_DOMAINS?: string;
+  AUTH_EMAIL: string;
+  AUTH_SUB: string;
+  AUTH_PASSWORD_HASH?: string;
+  AUTH_SESSION_SECRET?: string;
+  AUTH_RATE_LIMITER: RateLimit;
   MACHINE_ORIGIN: string;
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
