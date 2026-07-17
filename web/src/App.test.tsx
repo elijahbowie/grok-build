@@ -162,4 +162,28 @@ describe("Grok Build workspace", () => {
       expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ modelProfileId:"mdl-1", maxTurns:12, webSearch:"require", allowedTools:["Read","Grep"], outputSchema:{type:"object"}, attachmentIds:["att_123"] });
     });
   });
+
+  it("replaces storage failures with an actionable workspace error", async () => {
+    const cloudTask = { ...task, projectId: "project-1", source: "cloud", executionTarget: "remote" };
+    const cloudBootstrap = {
+      ...bootstrap, mode: "cloud", identity: { email: "director@eicimpact.org" }, tasks: [cloudTask],
+      projects: [{ id: "project-1", name: "Grok Build", slug: "grok-build", artifact_repo: "grok-build", default_branch: "main", source_type: "empty", source_url: null, ready: true }],
+      github: { app: null, connections: [], sync: [] }, limits: { concurrentTasks: 5, taskTimeoutMinutes: 60, retentionDays: 30 },
+    };
+    vi.stubGlobal("WebSocket", class { onmessage = null; onerror = null; close() {} });
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/bootstrap") return response(cloudBootstrap);
+      if (path === "/api/tasks/task-1") return response(cloudTask);
+      if (path === "/api/tasks/task-1/diff") return response({ patch: "" });
+      if (path === "/api/context-preview?projectId=project-1") return response({ rules: [], memories: [], privacyMode: false });
+      if (path === "/api/model-profiles?projectId=project-1") return response({ error: "D1_ERROR: no such table: model_profiles: SQLITE_ERROR" }, false);
+      return response({});
+    }));
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /New agent/i }));
+    expect(await screen.findByText("Workspace isn't ready.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
+    expect(screen.queryByText(/D1_ERROR|SQLITE_ERROR|model_profiles/)).not.toBeInTheDocument();
+  });
 });
